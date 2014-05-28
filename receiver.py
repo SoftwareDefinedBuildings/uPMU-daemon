@@ -9,7 +9,7 @@ import struct
 
 from parser import sync_output, parse_sync_output
 
-ADDRESSP = 1883
+ADDRESSP = 1884
 
 processed = []
 
@@ -66,42 +66,58 @@ def process(structs, filepath):
             rows.append(row)
             
     # Write to a csv file in the folder output
-    sl = filepath.index('/')
+    sl = filepath.find('/')
+    if sl == -1:
+        sl += 1
     if not os.path.exists('output/{0}'.format(filepath[:sl])):
         os.makedirs('output/{0}'.format(filepath[:sl]))
     f = open('output/' + filepath, 'wb')
     writer = csv.writer(f)
     writer.writerows(rows)
     processed.append(structs)
+    
+def receive_all_data(socket, numbytes):
+    data = ''
+    while numbytes > 0:
+        newdata = socket.recv(numbytes)
+        numbytes -= len(newdata)
+        data += newdata
+    return data
 
 # Receive and process data
-closed = True
+connected = False
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
 try:
     server_socket.bind(('localhost', ADDRESSP))
     server_socket.listen(10)
+    connect_socket, connect_addr = server_socket.accept()
+    print 'Accepted connection'
+    connected = True
     while True:
-        connect_socket, connect_addr = server_socket.accept()
-        closed = False
-        
         # Receive the data
-        length_string = connect_socket.recv(8)
+        sendid = receive_all_data(connect_socket, 4)
+        length_string = receive_all_data(connect_socket, 8)
         lengths, lengthd = struct.unpack('<ii', length_string)
         assert lengths > 4
-        filepath = connect_socket.recv(lengths)
+        filepath = receive_all_data(connect_socket, lengths)
         print 'Received {0}'.format(filepath)
         filepath = filepath[:-4] + '.csv'
-        connect_socket.recv((4 - (lengths % 4)) % 4) # get rid of padding bytes
-        data = connect_socket.recv(lengthd)
+
+        receive_all_data(connect_socket, 4 - (lengths % 4)) # get rid of padding bytes
+        data = receive_all_data(connect_socket, lengthd)
+        
+        # Process the data
         process(parse(data), filepath)
         
-        # Terminate the connection
-        connect_socket.shutdown(socket.SHUT_RDWR);
-        connect_socket.close();
-        closed = True
-except KeyboardInterrupt:
-    server_socket.shutdown(socket.SHUT_RDWR);
+        # Send confirmation of receipt
+        bytesSent = 0
+        while bytesSent < 4:
+            sentNow = connect_socket.send(sendid[bytesSent:])
+            bytesSent += sentNow
+except Exception as e:
+    server_socket.shutdown(socket.SHUT_RDWR)
     server_socket.close()
-    if not closed:
-        connect_socket.shutdown(socket.SHUT_RDWR);
-        connect_socket.close();
+    if connected:
+        connect_socket.shutdown(socket.SHUT_RDWR)
+        connect_socket.close()
+    raise
