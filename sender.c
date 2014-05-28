@@ -1,7 +1,7 @@
 #define EVENT_BUF_LEN 128
 #define EVENT_SIZE  ( sizeof (struct inotify_event) )
 #define ADDRESSD "127.0.0.1" // for bw.cal-sdb.org, this should be "54.241.13.58"
-#define ADDRESSP 1884
+#define ADDRESSP 1883
 
 #include <errno.h>
 #include <stdio.h>
@@ -143,7 +143,7 @@ int processdir(const char* dirpath, int socket_descriptor, int depth)
 {
     if (depth >= 2) // Only look in subdirectories, not in subsubdirectories, etc.
     {
-        return 0:
+        return 0;
     }
     DIR* directory = opendir(dirpath);
     if (directory == NULL)
