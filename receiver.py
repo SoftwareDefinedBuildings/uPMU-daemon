@@ -9,9 +9,21 @@ import struct
 
 from parser import sync_output, parse_sync_output
 
-ADDRESSP = 1884
+numouts = 0
+
+ADDRESSP = 1883
+
+NUM_SECONDS_PER_FILE = 15 * 60
 
 processed = []
+
+# The first row of every csv file has lables
+firstrow = ['time', 'lockstate']
+for start in ('L', 'C'):
+    for num in xrange(1, 4):
+        for end in ('Ang', 'Mag'):
+            firstrow.append('{0}{1}{2}'.format(start, num, end))
+firstrow.extend(['satellites', 'hasFix'])
 
 def parse(string):
     """ Parses data (in the form of STRING) into a series of sync_output
@@ -32,21 +44,47 @@ def time_to_nanos(lst):
     return 1000000000 * calendar.timegm(datetime.datetime(*lst).utctimetuple())
     
 
-def process(structs, filepath):
-    """ Converts DATA (a list of sync_object structs) to a csv file in the
-    directory FILEPATH relative to the directory "output". """
-    # Create a list of lists, where each list represents a row
-    rows = []
-    # The first row has lables
-    firstrow = ['time', 'lockstate']
-    for start in ('L', 'C'):
-        for num in xrange(1, 4):
-            for end in ('Ang', 'Mag'):
-                firstrow.append('{0}{1}{2}'.format(start, num, end))
-    firstrow.extend(['satellites', 'hasFix'])
-    rows.append(firstrow)
+def process(data):
+    """ Converts DATA (in the form of a string) to sync_output objects and
+    adds them to the list of processed objects. When enough objects have been
+    processed, they are converted to a CSV file"""
+    processed.extend(parse(data))
+    if len(processed) >= NUM_SECONDS_PER_FILE:
+        processed.sort(key=lambda x: x.sync_data.times)
+        # Check if the structs have duplicates or missing items, print warnings if so
+        dates = tuple(datetime.datetime(*s.sync_data.times) for s in processed)
+        i = 1
+        while i < len(dates):
+            date1 = dates[i-1]
+            date2 = dates[i]
+            delta = int((date2 - date1).total_seconds() + 0.5) # round difference to nearest second
+            if delta == 0:
+                print 'WARNING: duplicate record for {0}'.format(str(date2))
+            elif delta != 1:
+                print 'WARNING: missing record(s) (skips from {0} to {1})'.format(str(date1), str(date2))
+            i += 1
+        write_csv()
     
-    for s in structs:
+    
+  
+            
+def write_csv():
+    global numouts, processed
+    if not os.path.exists('output/'):
+        os.mkdir('output/')
+    elif numouts == 0:
+        numfiles = len(tuple(_ for _ in os.listdir('output/')))
+        while not os.path.exists('output/out{0}.csv'.format(numouts)):
+            numouts -= 1
+        numouts += 1
+    else:
+        while os.path.exists('output/out{0}.csv'.format(numouts)):
+            numouts += 1
+    f = open('output/out{0}.csv'.format(numouts), 'wb')
+    writer = csv.writer(f)
+    writer.writerow(firstrow)
+    rows = []
+    for s in processed:
         basetime = time_to_nanos(s.sync_data.times)
         # it seems s.sync_data.sampleRate is the number of milliseconds between samples
         timedelta = 1000000 * s.sync_data.sampleRate # nanoseconds between samples
@@ -64,17 +102,8 @@ def process(structs, filepath):
             row.append(s.gps_stats.hasFix)
             i += 1
             rows.append(row)
-            
-    # Write to a csv file in the folder output
-    sl = filepath.find('/')
-    if sl == -1:
-        sl += 1
-    if not os.path.exists('output/{0}'.format(filepath[:sl])):
-        os.makedirs('output/{0}'.format(filepath[:sl]))
-    f = open('output/' + filepath, 'wb')
-    writer = csv.writer(f)
     writer.writerows(rows)
-    processed.append(structs)
+    processed = []
     
 def receive_all_data(socket, numbytes):
     data = ''
@@ -107,7 +136,7 @@ try:
         data = receive_all_data(connect_socket, lengthd)
         
         # Process the data
-        process(parse(data), filepath)
+        process(data)
         
         # Send confirmation of receipt
         bytesSent = 0
