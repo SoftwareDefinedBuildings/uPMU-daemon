@@ -2,6 +2,7 @@
 #define EVENT_SIZE  ( sizeof (struct inotify_event) )
 #define ADDRESSD "127.0.0.1" // for bw.cal-sdb.org, this should be "54.241.13.58"
 #define ADDRESSP 1883
+#define NUMTRIES 10 // the number of times to try sending a file until giving up
 
 #include <errno.h>
 #include <stdio.h>
@@ -25,11 +26,33 @@ watched_entry_t child;
 
 fd_set set;
 
+struct sockaddr* server_addr;
+
 uint32_t sendid = 0;
+
+int send_until_success(int* socket_descriptor, const char* filepath, int inRootDir)
+{
+    int numTries = 0;
+    int result;
+    while ((result = send_file(*socket_descriptor, filepath, inRootDir)) == -1 && numTries < NUMTRIES)
+    {
+        shutdown(*socket_descriptor, SHUT_RDWR);
+        close(*socket_descriptor);
+        numTries++;
+        printf("Attempting to reconnect (attempt #%d)\n", numTries);
+        *socket_descriptor = make_socket();
+    }
+    if (numTries == NUMTRIES)
+    {
+        return -1;
+    }
+    return result;
+}
 
 int send_file(int socket_descriptor, const char* filepath, int inRootDir)
 {
-    printf("Processing %s\n", filepath);
+    printf("Sending file %s\n", filepath);
+    
     // Ignore files that are not .dat
     const char* substr = filepath + strlen(filepath) - 4;
     if (strcmp(substr, ".dat") != 0)
@@ -119,6 +142,11 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
             printf("Could not receive confirmation of receipt of %s\n", filepath);
             return -1;
         }
+        else if (dataread == 0)
+        {
+            printf("Connection was closed before confirmation was received\n");
+            return -1;
+        }
         dataleft -= dataread;
     }
     
@@ -139,7 +167,7 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
     return 0;
 }
 
-int processdir(const char* dirpath, int socket_descriptor, int depth)
+int processdir(const char* dirpath, int* socket_descriptor, int depth)
 {
     if (depth >= 2) // Only look in subdirectories, not in subsubdirectories, etc.
     {
@@ -176,18 +204,19 @@ int processdir(const char* dirpath, int socket_descriptor, int depth)
             }
             else if (S_ISREG(pathStats.st_mode))
             {
-                send_file(socket_descriptor, fullpath, depth == 0);
+                send_until_success(socket_descriptor, fullpath, depth == 0);
             }
         }
     }
-    if (errno != 0) {
+    if (errno != 0)
+    {
         printf("Could not finish reading directory %s\n", dirpath);
         return -1;
     }
     return 0;
 }
 
-int make_socket(struct sockaddr* server_addr)
+int make_socket()
 {
     int socket_descriptor = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (socket_descriptor < 0)
@@ -199,7 +228,7 @@ int make_socket(struct sockaddr* server_addr)
     {
         perror("could not connect");
         close(socket_descriptor);
-        exit(1);
+        return -1;
     }
     return socket_descriptor;
 }
@@ -225,10 +254,28 @@ int main(int argc, char* argv[])
         perror("invalid ip address in \"inet_pton\"");
         exit(1);
     }
-    int socket_des = make_socket((struct sockaddr*) &server);
+    server_addr = (struct sockaddr*) &server;
+    int socket_des = -1;
+    int numTries = 0;
+    while (socket_des == -1 && numTries < NUMTRIES)
+    {
+        numTries++;
+        printf("Connecting (attempt #%d)...\n", numTries);
+        socket_des = make_socket();
+    }
+    if (numTries == NUMTRIES)
+    {
+        printf("Could not connect to server\n");
+        printf("Closing program\n");
+        exit(1);
+    }
+    else
+    {
+        printf("Connection successful\n");
+    }
     
     // Process existing files on startup
-    if (processdir(argv[1], socket_des, 0) < 0)
+    if (processdir(argv[1], &socket_des, 0) < 0)
     {
         // The function already prints the appropriate error message
         exit(1);
@@ -275,6 +322,7 @@ int main(int argc, char* argv[])
         }
         while (i < rlen)
         {
+            result = 0;
             struct inotify_event* ev = (struct inotify_event*) &buffer[i];
             if (ev->len)
             {
@@ -315,7 +363,7 @@ int main(int argc, char* argv[])
                         strcpy(fullname, ndirname);
                         strcat(fullname,"/");
                         strcat(fullname, dir->d_name);
-                        send_file(socket_des, fullname, 0);
+                        result = send_until_success(&socket_des, fullname, 0);
                     }
                     closedir(basedir);
                 }
@@ -325,27 +373,37 @@ int main(int argc, char* argv[])
                     if (child.fd == ev->wd || rootdirfd == ev->wd)
                     {
                         char* parentdir;
+                        int inRootDir;
                         if (child.fd == ev->wd)
                         {
                             parentdir = child.path;
+                            inRootDir = 0;
                         }
                         else
                         {
                             parentdir = argv[1];
+                            inRootDir = 1;
                         }
                         char fullname [256];
-                        printf("File closed after writing: %s/%s\n", parentdir, ev->name);
                         strcpy(fullname, parentdir);
                         strcat(fullname,"/");
                         strcat(fullname, ev->name);
-                        printf("Processing\n");
-                        send_file(socket_des, fullname, 0);
-                        printf("Processing done\n");
+                        result = send_until_success(&socket_des, fullname, inRootDir);
                     }
                     else
                     {
                         fprintf(stderr, "Error, got unexpected file close FD\n");
                     }
+                }
+                if (result == 1)
+                {
+                    printf("Could not read %s (file not sent)\n", ev->name);
+                }
+                else if (result == -1)
+                {
+                    printf("Connection to server was lost, could not reconnect\n");
+                    printf("Closing program\n");
+                    exit(1);
                 }
             }
             i += EVENT_SIZE + ev->len;

@@ -17,6 +17,12 @@ NUM_SECONDS_PER_FILE = 15 * 60
 
 processed = []
 
+class ConnectionTerminatedException(RuntimeError):
+    pass
+    
+class ParseException(RuntimeError):
+    pass
+
 # The first row of every csv file has lables
 firstrow = ['time', 'lockstate']
 for start in ('L', 'C'):
@@ -64,10 +70,7 @@ def process(data):
                 print 'WARNING: missing record(s) (skips from {0} to {1})'.format(str(date1), str(date2))
             i += 1
         write_csv()
-    
-    
-  
-            
+
 def write_csv():
     global numouts, processed
     if not os.path.exists('output/'):
@@ -80,6 +83,7 @@ def write_csv():
     else:
         while os.path.exists('output/out{0}.csv'.format(numouts)):
             numouts += 1
+    print 'Writing file output/out{0}.csv'.format(numouts)
     f = open('output/out{0}.csv'.format(numouts), 'wb')
     writer = csv.writer(f)
     writer.writerow(firstrow)
@@ -109,9 +113,18 @@ def receive_all_data(socket, numbytes):
     data = ''
     while numbytes > 0:
         newdata = socket.recv(numbytes)
+        if len(newdata) <= 0:
+            raise ConnectionTerminatedException('Could not receive data')
         numbytes -= len(newdata)
         data += newdata
     return data
+
+def close_connection():
+    server_socket.shutdown(socket.SHUT_RDWR)
+    server_socket.close()
+    if connected:
+        connect_socket.shutdown(socket.SHUT_RDWR)
+        connect_socket.close()
 
 # Receive and process data
 connected = False
@@ -123,30 +136,40 @@ try:
     print 'Accepted connection'
     connected = True
     while True:
-        # Receive the data
-        sendid = receive_all_data(connect_socket, 4)
-        length_string = receive_all_data(connect_socket, 8)
-        lengths, lengthd = struct.unpack('<ii', length_string)
-        assert lengths > 4
-        filepath = receive_all_data(connect_socket, lengths)
-        print 'Received {0}'.format(filepath)
-        filepath = filepath[:-4] + '.csv'
+        try:
+            # Receive the data
+            sendid = receive_all_data(connect_socket, 4)
+            length_string = receive_all_data(connect_socket, 8)
+            lengths, lengthd = struct.unpack('<ii', length_string)
+            assert lengths > 4
+            filepath = receive_all_data(connect_socket, lengths)
+            print 'Received {0}'.format(filepath)
+            filepath = filepath[:-4] + '.csv'
 
-        receive_all_data(connect_socket, 4 - (lengths % 4)) # get rid of padding bytes
-        data = receive_all_data(connect_socket, lengthd)
-        
-        # Process the data
-        process(data)
-        
-        # Send confirmation of receipt
-        bytesSent = 0
-        while bytesSent < 4:
-            sentNow = connect_socket.send(sendid[bytesSent:])
-            bytesSent += sentNow
-except Exception as e:
-    server_socket.shutdown(socket.SHUT_RDWR)
-    server_socket.close()
-    if connected:
-        connect_socket.shutdown(socket.SHUT_RDWR)
-        connect_socket.close()
+            receive_all_data(connect_socket, 4 - (lengths % 4)) # get rid of padding bytes
+            data = receive_all_data(connect_socket, lengthd)
+            
+            # Process the data
+            process(data)
+            
+            # Send confirmation of receipt
+            bytesSent = 0
+            while bytesSent < 4:
+                sentNow = connect_socket.send(sendid[bytesSent:])
+                if sentNow <= 0:
+                    raise ConnectionTerminatedException('Could not send confirmation')
+                bytesSent += sentNow
+        except (ConnectionTerminatedException, socket.error):
+            connect_socket.shutdown(socket.SHUT_RDWR)
+            connect_socket.close()
+            print 'Connection was terminated'
+            print 'Attempting to reconnect...'
+            connect_socket, connect_addr = server_socket.accept()
+            print 'Accepted connection'
+except KeyboardInterrupt:
+    pass
+except:
     raise
+finally:
+    write_csv()
+    close_connection()
