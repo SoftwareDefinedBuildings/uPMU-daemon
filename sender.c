@@ -1,6 +1,5 @@
 #define EVENT_BUF_LEN 128
 #define EVENT_SIZE  ( sizeof (struct inotify_event) )
-#define ADDRESSD "127.0.0.1" // for bw.cal-sdb.org, this should be "54.241.13.58"
 #define ADDRESSP 1883
 
 #include <errno.h>
@@ -206,9 +205,9 @@ int make_socket(struct sockaddr* server_addr)
 
 int main(int argc, char* argv[])
 {
-    if (argc != 2)
+    if (argc != 3)
     {
-        printf("Usage: %s <directorytowatch>\n", argv[0]);
+        printf("Usage: %s <directorytowatch> <targetserver>\n", argv[0]);
         exit(1);
     }
     
@@ -217,7 +216,7 @@ int main(int argc, char* argv[])
     memset(&server, 0, sizeof(server));
     server.sin_family = AF_INET;
     server.sin_port = htons(ADDRESSP);
-    int result = inet_pton(AF_INET, ADDRESSD, &server.sin_addr);
+    int result = inet_pton(AF_INET, argv[2], &server.sin_addr);
     if (result < 0) {
         perror("invalid address family in \"inet_pton\"");
         exit(1);
