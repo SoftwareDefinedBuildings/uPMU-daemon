@@ -8,6 +8,8 @@ import socket
 import struct
 
 from parser import sync_output, parse_sync_output
+from ssmap import Ssstream
+from sys import argv
 
 numouts = 0
 
@@ -15,7 +17,21 @@ ADDRESSP = 1883
 
 NUM_SECONDS_PER_FILE = 15 * 60
 
-processed = []
+parsed = [] # Stores parsed sync_output structs
+
+# Check command line arguments
+if len(argv) != 3 and len(argv) != 4:
+    print 'Usage: ./receiver.py <archiver url> <subscription key> [<num seconds per publish>]'
+    exit()
+
+if len(argv) == 4:
+    NUM_SECONDS_PER_FILE = int(argv[3])
+
+L1Mag = Ssstream(unitofTime='ns', unitofMeasure='mag', url=argv[1], subkey=argv[2])
+L1Ang = Ssstream(unitofTime='ns', unitofMeasure='deg', url=argv[1], subkey=argv[2])
+C1Mag = Ssstream(unitofTime='ns', unitofMeasure='mag', url=argv[1], subkey=argv[2])
+C1Ang = Ssstream(unitofTime='ns', unitofMeasure='deg', url=argv[1], subkey=argv[2])
+satellites = Ssstream(unitofTime='ns', unitofMeasure='', url=argv[1], subkey=argv[2])
 
 class ConnectionTerminatedException(RuntimeError):
     pass
@@ -54,11 +70,11 @@ def process(data):
     """ Converts DATA (in the form of a string) to sync_output objects and
     adds them to the list of processed objects. When enough objects have been
     processed, they are converted to a CSV file"""
-    processed.extend(parse(data))
-    if len(processed) >= NUM_SECONDS_PER_FILE:
-        processed.sort(key=lambda x: x.sync_data.times)
+    parsed.extend(parse(data))
+    if len(parsed) >= NUM_SECONDS_PER_FILE:
+        parsed.sort(key=lambda x: x.sync_data.times)
         # Check if the structs have duplicates or missing items, print warnings if so
-        dates = tuple(datetime.datetime(*s.sync_data.times) for s in processed)
+        dates = tuple(datetime.datetime(*s.sync_data.times) for s in parsed)
         i = 1
         while i < len(dates):
             date1 = dates[i-1]
@@ -69,7 +85,30 @@ def process(data):
             elif delta != 1:
                 print 'WARNING: missing record(s) (skips from {0} to {1})'.format(str(date1), str(date2))
             i += 1
-        write_csv()
+        publish()
+
+def publish():
+    for stream in ('L1Mag', 'L1Ang', 'C1Mag', 'C1Ang', 'satellites'):
+        exec(stream + 'Data = []') # for each stream, initialize a list containing data
+    for s in parsed:
+       basetime = time_to_nanos(s.sync_data.times)
+       # it seems s.sync_data.sampleRate is the number of milliseconds between samples
+       timedelta = 1000000 * s.sync_data.sampleRate # nanoseconds between samples
+       for i in xrange(120):
+           currtime = basetime + int((i * timedelta) + 0.5)
+           L1MagData.append((currtime, s.sync_data.L1MagAng[i].mag))
+           L1AngData.append((currtime, s.sync_data.L1MagAng[i].angle))
+           C1MagData.append((currtime, s.sync_data.C1MagAng[i].mag))
+           C1AngData.append((currtime, s.sync_data.C1MagAng[i].angle))
+           satellitesData.append((currtime, s.gps_stats.satellites))
+    success = True
+    for stream in ('L1Mag', 'L1Ang', 'C1Mag', 'C1Ang', 'satellites'):
+        getattr(eval(stream), 'set_readings')(eval(stream + 'Data'))
+        if not getattr(eval(stream), 'publish')():
+            success = False
+            print 'Could not publish stream {0}'.format(stream)
+    if success:
+        print 'Successfully published to {0}'.format(argv[1])
 
 def write_csv():
     global numouts, processed
@@ -88,7 +127,7 @@ def write_csv():
     writer = csv.writer(f)
     writer.writerow(firstrow)
     rows = []
-    for s in processed:
+    for s in parsed:
         basetime = time_to_nanos(s.sync_data.times)
         # it seems s.sync_data.sampleRate is the number of milliseconds between samples
         timedelta = 1000000 * s.sync_data.sampleRate # nanoseconds between samples
@@ -171,5 +210,5 @@ except KeyboardInterrupt:
 except:
     raise
 finally:
-    write_csv()
+    publish()
     close_connection()
