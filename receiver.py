@@ -6,6 +6,9 @@ import datetime
 import os
 import socket
 import struct
+import thread
+import threading
+import traceback
 
 from parser import sync_output, parse_sync_output
 from sys import argv
@@ -14,7 +17,7 @@ numouts = 0
 
 ADDRESSP = 1883
 
-NUM_SECONDS_PER_FILE = 15 * 60
+NUM_SECONDS_PER_FILE = 10
 
 parsed = [] # Stores parsed sync_output structs
 
@@ -23,31 +26,39 @@ if len(argv) not in (3, 4, 1):
     print 'Usage: ./receiver.py <archiver url> <subscription key> [<num seconds per publish>]'
     print 'OR ./receiver.py to write to CSV file instead (included for testing purposes only)'
     exit()
+elif len(argv) == 1:
+    print 'In CSV mode'
+    print 'Normal usage: ./receiver.py <archiver url> <subscription key> [<num seconds per publish>]'
 
 if len(argv) == 4:
     NUM_SECONDS_PER_FILE = int(argv[3])
 
-if len(argv) != 1:
+if len(argv) == 1:
+    # The first row of every csv file has lables
+    firstrow = ['time', 'lockstate']
+    for start in ('L', 'C'):
+        for num in xrange(1, 4):
+            for end in ('Ang', 'Mag'):
+                firstrow.append('{0}{1}{2}'.format(start, num, end))
+    firstrow.extend(['satellites', 'hasFix'])
+else:
+    # Make streams for publishing
     from ssmap import Ssstream
-    L1Mag = Ssstream(unitofTime='ns', unitofMeasure='mag', url=argv[1], subkey=argv[2])
-    L1Ang = Ssstream(unitofTime='ns', unitofMeasure='deg', url=argv[1], subkey=argv[2])
-    C1Mag = Ssstream(unitofTime='ns', unitofMeasure='mag', url=argv[1], subkey=argv[2])
-    C1Ang = Ssstream(unitofTime='ns', unitofMeasure='deg', url=argv[1], subkey=argv[2])
-    satellites = Ssstream(unitofTime='ns', unitofMeasure='', url=argv[1], subkey=argv[2])
+    L1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Mag', None, 'ns', 'V', 'UTC', [], argv[1], argv[2]), []]
+    L1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Ang', None, 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
+    C1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Mag', None, 'ns', 'A', 'UTC', [], argv[1], argv[2]), []]
+    C1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Ang', None, 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
+    satellites = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'satellites', None, 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
+    streams = (L1Mag, L1Ang, C1Mag, C1Ang, satellites)
+
+# Lock on data (to avoid concurrent writing to "parsed")
+datalock = threading.Lock()
 
 class ConnectionTerminatedException(RuntimeError):
     pass
     
 class ParseException(RuntimeError):
     pass
-
-# The first row of every csv file has lables
-firstrow = ['time', 'lockstate']
-for start in ('L', 'C'):
-    for num in xrange(1, 4):
-        for end in ('Ang', 'Mag'):
-            firstrow.append('{0}{1}{2}'.format(start, num, end))
-firstrow.extend(['satellites', 'hasFix'])
 
 def parse(string):
     """ Parses data (in the form of STRING) into a series of sync_output
@@ -72,54 +83,74 @@ def process(data):
     """ Converts DATA (in the form of a string) to sync_output objects and
     adds them to the list of processed objects. When enough objects have been
     processed, they are converted to a CSV file"""
-    parsed.extend(parse(data))
-    if len(parsed) >= NUM_SECONDS_PER_FILE:
-        parsed.sort(key=lambda x: x.sync_data.times)
-        # Check if the structs have duplicates or missing items, print warnings if so
-        dates = tuple(datetime.datetime(*s.sync_data.times) for s in parsed)
-        i = 1
-        while i < len(dates):
-            date1 = dates[i-1]
-            date2 = dates[i]
-            delta = int((date2 - date1).total_seconds() + 0.5) # round difference to nearest second
-            if delta == 0:
-                print 'WARNING: duplicate record for {0}'.format(str(date2))
-            elif delta != 1:
-                print 'WARNING: missing record(s) (skips from {0} to {1})'.format(str(date1), str(date2))
-            i += 1
+    with datalock:
+        parsed.extend(parse(data))
+    if len(argv) == 1 and len(parsed) >= NUM_SECONDS_PER_FILE:
         publish()
 
+def check_duplicates(sorted_struct_list):
+    # Check if the structs have duplicates or missing items, print warnings if so
+    dates = tuple(datetime.datetime(*s.sync_data.times) for s in sorted_struct_list)
+    i = 1
+    while i < len(dates):
+        date1 = dates[i-1]
+        date2 = dates[i]
+        delta = int((date2 - date1).total_seconds() + 0.5) # round difference to nearest second
+        if delta == 0:
+            print 'WARNING: duplicate record for {0}'.format(str(date2))
+        elif delta != 1:
+            print 'WARNING: missing record(s) (skips from {0} to {1})'.format(str(date1), str(date2))
+        i += 1
+        
 def publish():
     global parsed
-    for stream in ('L1Mag', 'L1Ang', 'C1Mag', 'C1Ang', 'satellites'):
-        exec(stream + 'Data = []') # for each stream, initialize a list containing data
+    datalock.acquire()
+    if not parsed:
+        datalock.release()
+        return
+    parsed.sort(key=lambda x: x.sync_data.times)
+    check_duplicates(parsed)
+    for stream in streams:
+        stream[1] = []
     for s in parsed:
        basetime = time_to_nanos(s.sync_data.times)
        # it seems s.sync_data.sampleRate is the number of milliseconds between samples
        timedelta = 1000000 * s.sync_data.sampleRate # nanoseconds between samples
        for i in xrange(120):
            currtime = basetime + int((i * timedelta) + 0.5)
-           L1MagData.append((currtime, s.sync_data.L1MagAng[i].mag))
-           L1AngData.append((currtime, s.sync_data.L1MagAng[i].angle))
-           C1MagData.append((currtime, s.sync_data.C1MagAng[i].mag))
-           C1AngData.append((currtime, s.sync_data.C1MagAng[i].angle))
-           satellitesData.append((currtime, s.gps_stats.satellites))
+           L1Mag[1].append((currtime, s.sync_data.L1MagAng[i].mag))
+           L1Ang[1].append((currtime, s.sync_data.L1MagAng[i].angle))
+           C1Mag[1].append((currtime, s.sync_data.C1MagAng[i].mag))
+           C1Ang[1].append((currtime, s.sync_data.C1MagAng[i].angle))
+           satellites[1].append((currtime, s.gps_stats.satellites))
     success = True
-    for stream in ('L1Mag', 'L1Ang', 'C1Mag', 'C1Ang', 'satellites'):
-        getattr(eval(stream), 'set_readings')(eval(stream + 'Data'))
-        if not getattr(eval(stream), 'publish')():
-            success = False
-            print 'Could not publish stream {0}'.format(stream)
-    if success:
-        print 'Successfully published to {0}'.format(argv[1])
-        parsed = []
+    try:
+        for stream in streams:
+            stream[0].set_readings(stream[1])
+            if not stream[0].publish():
+                success = False
+                print 'Could not publish stream {0}'.format(stream)
+        if success:
+            print 'Successfully published to {0}'.format(argv[1])
+            parsed = []
+    except KeyboardInterrupt:
+        raise
+    except BaseException as be:
+        print 'WARNING: publish could not be completed due to exception'
+        print 'Details: {0}'.format(be)
+        print 'Traceback:'
+        traceback.print_exc()
+    finally:
+        datalock.release()
 
 def write_csv():
     global numouts, parsed
+    parsed.sort(key=lambda x: x.sync_data.times)
+    check_duplicates(parsed)
     if not os.path.exists('output/'):
         os.mkdir('output/')
     elif numouts == 0:
-        numfiles = len(tuple(_ for _ in os.listdir('output/')))
+        numfiles = len(os.listdir('output/'))
         while not os.path.exists('output/out{0}.csv'.format(numouts)):
             numouts -= 1
         numouts += 1
@@ -152,8 +183,22 @@ def write_csv():
     writer.writerows(rows)
     parsed = []
 
+
+t = None # A timer for publishing repeatedly
+restart = True # Determines whether data will be published again
+
 if len(argv) == 1:
     publish = write_csv
+else:
+    # Set up thread for publishing repeatedly
+    def publish_repeatedly():
+        global t
+        if restart:
+            t = threading.Timer(NUM_SECONDS_PER_FILE, publish_repeatedly)
+            t.start()
+        publish()    
+    # Start publishing repeatedly
+    publish_repeatedly()
 
 def receive_all_data(socket, numbytes):
     data = ''
@@ -213,10 +258,16 @@ try:
             print 'Attempting to reconnect...'
             connect_socket, connect_addr = server_socket.accept()
             print 'Accepted connection'
+            connected = True
 except KeyboardInterrupt:
     pass
 except:
     raise
 finally:
-    publish()
+    restart = False
+    if t is not None:
+        t.cancel()
+    publish() # Publish any data still waiting
     close_connection()
+    
+
