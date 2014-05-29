@@ -8,7 +8,6 @@ import socket
 import struct
 
 from parser import sync_output, parse_sync_output
-from ssmap import Ssstream
 from sys import argv
 
 numouts = 0
@@ -20,18 +19,21 @@ NUM_SECONDS_PER_FILE = 15 * 60
 parsed = [] # Stores parsed sync_output structs
 
 # Check command line arguments
-if len(argv) != 3 and len(argv) != 4:
+if len(argv) not in (3, 4, 1):
     print 'Usage: ./receiver.py <archiver url> <subscription key> [<num seconds per publish>]'
+    print 'OR ./receiver.py to write to CSV file instead (included for testing purposes only)'
     exit()
 
 if len(argv) == 4:
     NUM_SECONDS_PER_FILE = int(argv[3])
 
-L1Mag = Ssstream(unitofTime='ns', unitofMeasure='mag', url=argv[1], subkey=argv[2])
-L1Ang = Ssstream(unitofTime='ns', unitofMeasure='deg', url=argv[1], subkey=argv[2])
-C1Mag = Ssstream(unitofTime='ns', unitofMeasure='mag', url=argv[1], subkey=argv[2])
-C1Ang = Ssstream(unitofTime='ns', unitofMeasure='deg', url=argv[1], subkey=argv[2])
-satellites = Ssstream(unitofTime='ns', unitofMeasure='', url=argv[1], subkey=argv[2])
+if len(argv) != 1:
+    from ssmap import Ssstream
+    L1Mag = Ssstream(unitofTime='ns', unitofMeasure='mag', url=argv[1], subkey=argv[2])
+    L1Ang = Ssstream(unitofTime='ns', unitofMeasure='deg', url=argv[1], subkey=argv[2])
+    C1Mag = Ssstream(unitofTime='ns', unitofMeasure='mag', url=argv[1], subkey=argv[2])
+    C1Ang = Ssstream(unitofTime='ns', unitofMeasure='deg', url=argv[1], subkey=argv[2])
+    satellites = Ssstream(unitofTime='ns', unitofMeasure='', url=argv[1], subkey=argv[2])
 
 class ConnectionTerminatedException(RuntimeError):
     pass
@@ -88,6 +90,7 @@ def process(data):
         publish()
 
 def publish():
+    global parsed
     for stream in ('L1Mag', 'L1Ang', 'C1Mag', 'C1Ang', 'satellites'):
         exec(stream + 'Data = []') # for each stream, initialize a list containing data
     for s in parsed:
@@ -109,9 +112,10 @@ def publish():
             print 'Could not publish stream {0}'.format(stream)
     if success:
         print 'Successfully published to {0}'.format(argv[1])
+        parsed = []
 
 def write_csv():
-    global numouts, processed
+    global numouts, parsed
     if not os.path.exists('output/'):
         os.mkdir('output/')
     elif numouts == 0:
@@ -146,8 +150,11 @@ def write_csv():
             i += 1
             rows.append(row)
     writer.writerows(rows)
-    processed = []
-    
+    parsed = []
+
+if len(argv) == 1:
+    publish = write_csv
+
 def receive_all_data(socket, numbytes):
     data = ''
     while numbytes > 0:
@@ -201,6 +208,7 @@ try:
         except (ConnectionTerminatedException, socket.error):
             connect_socket.shutdown(socket.SHUT_RDWR)
             connect_socket.close()
+            connected = False
             print 'Connection was terminated'
             print 'Attempting to reconnect...'
             connect_socket, connect_addr = server_socket.accept()

@@ -25,6 +25,10 @@ watched_entry_t child;
 
 fd_set set;
 
+// when processing directories upon initialization, store the watched directories in an array
+int num_watched_dirs = 0;
+int size_watched_arr = 0;
+
 struct sockaddr* server_addr;
 
 uint32_t sendid = 0;
@@ -168,6 +172,7 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
 
 int processdir(const char* dirpath, int* socket_descriptor, int depth)
 {
+    int numsubdirs = 0;
     if (depth >= 2) // Only look in subdirectories, not in subsubdirectories, etc.
     {
         return 0;
@@ -200,6 +205,7 @@ int processdir(const char* dirpath, int* socket_descriptor, int depth)
                 {
                     return -1;
                 }
+                numsubdirs++;
             }
             else if (S_ISREG(pathStats.st_mode))
             {
@@ -212,7 +218,7 @@ int processdir(const char* dirpath, int* socket_descriptor, int depth)
         printf("Could not finish reading directory %s\n", dirpath);
         return -1;
     }
-    return 0;
+    return numsubdirs;
 }
 
 int make_socket()
@@ -273,8 +279,9 @@ int main(int argc, char* argv[])
         printf("Connection successful\n");
     }
     
+    int numsubdirs;
     // Process existing files on startup
-    if (processdir(argv[1], &socket_des, 0) < 0)
+    if ((numsubdirs = processdir(argv[1], &socket_des, 0)) < 0)
     {
         // The function already prints the appropriate error message
         exit(1);
@@ -289,15 +296,43 @@ int main(int argc, char* argv[])
         exit(1);
     }
     
+    // Create array that stores info for watching subdirs
+    watched_entry_t subdirstowatch[numsubdirs];
+    char names[numsubdirs][256];
+    
+    DIR* directory = opendir(argv[1]);
+    struct dirent* subdir;
+    struct stat pathStats;
+    int i = 0;
+    int arrsize;
+    char fullpath[256];
+    while ((subdir = readdir(directory)) != NULL)
+    {
+        if (strcmp(subdir->d_name, ".") != 0 && strcmp(subdir->d_name, "..") != 0)
+        {
+            strcpy(fullpath, argv[1]);
+            strcat(fullpath, "/");
+            strcat(fullpath, subdir->d_name);
+            stat(fullpath, &pathStats);
+            if (S_ISDIR(pathStats.st_mode))
+            {
+                subdirstowatch[i].fd = inotify_add_watch(fd, fullpath, IN_CLOSE_WRITE);
+                strcpy(names[i], fullpath);
+                subdirstowatch[i].path = names[i];
+                i++;
+            }
+        }
+    }
+    int watchinginitdirs = 1;
+    
     // This watch will notice any new files or subdirectories in the directory we are watching
-    int rootdirfd = inotify_add_watch(fd, argv[1], IN_CLOSE_WRITE | IN_CREATE);
+    int rootdirfd = inotify_add_watch(fd, argv[1], IN_CREATE | IN_CLOSE_WRITE);
     
     char buffer[EVENT_BUF_LEN];
     char ndirname[256];
 
     struct timeval timeout;
     int rlen;
-    int i;
 
     child.fd = -1;
 
@@ -365,10 +400,54 @@ int main(int argc, char* argv[])
                         result = send_until_success(&socket_des, fullname, 0);
                     }
                     closedir(basedir);
+                    
+                    if (watchinginitdirs)
+                    {
+                        i = 0;
+                        while (i < numsubdirs)
+                        {
+                            inotify_rm_watch(fd, subdirstowatch[i].fd);
+                            i++;
+                        }
+                        watchinginitdirs = 0;
+                    }
+                    
                 }
                 /* Check for a new file */
                 else if (((IN_CLOSE_WRITE) & ev->mask) && !(IN_ISDIR & ev->mask))
                 {
+                    if (watchinginitdirs && child.fd != ev->wd && rootdirfd != ev->wd)
+                    {
+                        int index = 0;
+                        int index2 = 0;
+                        while (index < numsubdirs)
+                        {
+                            if (subdirstowatch[index].fd == ev->wd)
+                            {
+                                child.fd = ev->wd;
+                                strcpy(ndirname, subdirstowatch[index].path);
+                                child.path = ndirname;
+                                break;
+                            }
+                            index++;
+                        }
+                        if (index == numsubdirs)
+                        {
+                            fprintf(stderr, "Error, got unexpected file close FD\n");
+                        }
+                        else
+                        {
+                            while (index2 < numsubdirs)
+                            {
+                                if (index != index2)
+                                {
+                                    inotify_rm_watch(fd, subdirstowatch[index2].fd);
+                                }
+                                index2++;
+                            }
+                            watchinginitdirs = 0;
+                        }
+                    }
                     if (child.fd == ev->wd || rootdirfd == ev->wd)
                     {
                         char* parentdir;
@@ -388,10 +467,6 @@ int main(int argc, char* argv[])
                         strcat(fullname,"/");
                         strcat(fullname, ev->name);
                         result = send_until_success(&socket_des, fullname, inRootDir);
-                    }
-                    else
-                    {
-                        fprintf(stderr, "Error, got unexpected file close FD\n");
                     }
                 }
                 if (result == 1)
