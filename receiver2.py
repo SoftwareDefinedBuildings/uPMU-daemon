@@ -111,12 +111,15 @@ def publish():
     if not parsed:
         datalock.release()
         return True
+    parsedcopy = parsed
+    parsed = []
+    datalock.release()
     print 'Publishing...'
-    parsed.sort(key=lambda x: x.sync_data.times)
-    check_duplicates(parsed)
+    parsedcopy.sort(key=lambda x: x.sync_data.times)
+    check_duplicates(parsedcopy)
     for stream in streams:
         stream[1] = []
-    for s in parsed:
+    for s in parsedcopy:
        basetime = time_to_nanos(s.sync_data.times)
        # it seems s.sync_data.sampleRate is the number of milliseconds between samples
        timedelta = 1000000 * s.sync_data.sampleRate # nanoseconds between samples
@@ -135,7 +138,6 @@ def publish():
                 print 'Could not publish stream'
         if success:
             print 'Successfully published to {0}'.format(argv[1])
-            parsed = []
     except BaseException as be:
         success = False
         print 'WARNING: publish could not be completed due to exception'
@@ -143,7 +145,9 @@ def publish():
         print 'Traceback:'
         traceback.print_exc()
     finally:
-        if not success:
+        if success:
+            return True
+        else:
             print 'Writing backup...' # on failure, write data to file if it could not be published
             if not os.path.exists('output/'):
                 os.mkdir('output/')
@@ -153,12 +157,11 @@ def publish():
                 numouts -= 1
             numouts += 1
             backup = open('output/out{0}.dat'.format(numouts), 'w')
-            for s in parsed:
+            for s in parsedcopy:
                 backup.write(s.data)
             backup.close()
             print 'Done writing backup.'
-        datalock.release()
-        return success
+            return False
 
 def write_csv():
     global numouts, parsed
