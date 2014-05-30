@@ -85,8 +85,8 @@ def process(data):
     """ Converts DATA (in the form of a string) to sync_output objects and
 adds them to the list of processed objects. When enough objects have been
 processed, they are converted to a CSV file"""
+    datalock.acquire()
     try:
-        datalock.acquire()
         parsed.extend(parse(data))
     finally:
         datalock.release()
