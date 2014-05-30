@@ -77,7 +77,7 @@ int send_until_success(int* socket_descriptor, const char* filepath, int inRootD
     if (numTries == NUMTRIES)
     {
         connected = 0;
-        return -1;
+        exit(1);
     }
     return result;
 }
