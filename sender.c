@@ -4,6 +4,7 @@
 #define NUMTRIES 10 // the number of times to try sending a file until giving up
 
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,9 +30,33 @@ fd_set set;
 int num_watched_dirs = 0;
 int size_watched_arr = 0;
 
+// the socket descriptor
+int socket_des = -1;
+
+// 1 if connected (i.e., socket connection needs to be closed), 0 otherwise
+int connected = 0;
+
+// pointer to the server address
 struct sockaddr* server_addr;
 
 uint32_t sendid = 0;
+
+/* Close the socket connection. */
+void close_connection(int socket_descriptor)
+{
+    shutdown(socket_descriptor, SHUT_RDWR);
+    close(socket_descriptor);
+}
+
+/* Exit, closing the socket connection if necessary. */
+void safe_exit(int arg)
+{
+    if (connected)
+    {
+        close_connection(socket_des);
+    }
+    exit(arg);
+}
 
 int send_until_success(int* socket_descriptor, const char* filepath, int inRootDir)
 {
@@ -39,14 +64,19 @@ int send_until_success(int* socket_descriptor, const char* filepath, int inRootD
     int result;
     while ((result = send_file(*socket_descriptor, filepath, inRootDir)) == -1 && numTries < NUMTRIES)
     {
-        shutdown(*socket_descriptor, SHUT_RDWR);
-        close(*socket_descriptor);
+        connected = 0;
+        if (numTries == 0)
+        {
+            close_connection(*socket_descriptor);
+        }
         numTries++;
         printf("Attempting to reconnect (attempt #%d)\n", numTries);
         *socket_descriptor = make_socket();
+        connected = 1;
     }
     if (numTries == NUMTRIES)
     {
+        connected = 0;
         return -1;
     }
     return result;
@@ -227,7 +257,7 @@ int make_socket()
     if (socket_descriptor < 0)
     {
         perror("could not create socket");
-        exit(1);
+        safe_exit(1);
     }
     if (connect(socket_descriptor, server_addr, sizeof(*server_addr)) < 0)
     {
@@ -238,11 +268,27 @@ int make_socket()
     return socket_descriptor;
 }
 
+void interrupt_handler(int sig)
+{
+    safe_exit(0);
+}
+
 int main(int argc, char* argv[])
 {
     if (argc != 3)
     {
-        printf("Usage: %s <directorytowatch> <targetserver>\n", argv[0]);
+        printf("Usage: interrupt_handler%s <directorytowatch> <targetserver>\n", argv[0]);
+        safe_exit(1);
+    }
+    
+    // Set up signal to handle Ctrl-C (close socket connection before terminating)
+    struct sigaction action;
+    action.sa_handler = interrupt_handler;
+    action.sa_flags = 0;
+    sigemptyset(&action.sa_mask);
+    if (-1 == sigaction(SIGINT, &action, NULL))
+    {
+        printf("Could not set up signal to handle keyboard interrupt\n");
         exit(1);
     }
     
@@ -254,25 +300,29 @@ int main(int argc, char* argv[])
     int result = inet_pton(AF_INET, argv[2], &server.sin_addr);
     if (result < 0) {
         perror("invalid address family in \"inet_pton\"");
-        exit(1);
+        safe_exit(1);
     } else if (result == 0) {
         perror("invalid ip address in \"inet_pton\"");
-        exit(1);
+        safe_exit(1);
     }
     server_addr = (struct sockaddr*) &server;
-    int socket_des = -1;
+    socket_des = make_socket();
+    connected = 1;
     int numTries = 0;
     while (socket_des == -1 && numTries < NUMTRIES)
     {
+        connected = 0;
         numTries++;
         printf("Connecting (attempt #%d)...\n", numTries);
+        connected = 1;
         socket_des = make_socket();
     }
     if (numTries == NUMTRIES)
     {
+        connected = 0;
         printf("Could not connect to server\n");
         printf("Closing program\n");
-        exit(1);
+        safe_exit(1);
     }
     else
     {
@@ -284,7 +334,7 @@ int main(int argc, char* argv[])
     if ((numsubdirs = processdir(argv[1], &socket_des, 0)) < 0)
     {
         // The function already prints the appropriate error message
-        exit(1);
+        safe_exit(1);
     }
     printf("Finished processing existing directories\n");
     
@@ -293,7 +343,7 @@ int main(int argc, char* argv[])
     if (fd < 0)
     {
         perror("inotify_init");
-        exit(1);
+        safe_exit(1);
     }
     
     // Create array that stores info for watching subdirs
@@ -386,7 +436,7 @@ int main(int argc, char* argv[])
                     if (!basedir)
                     {
                         perror("basedir");
-                        exit(1);
+                        safe_exit(1);
                     }
                     while ((dir = readdir(basedir)) != NULL)
                     {
@@ -477,7 +527,7 @@ int main(int argc, char* argv[])
                 {
                     printf("Connection to server was lost, could not reconnect\n");
                     printf("Closing program\n");
-                    exit(1);
+                    safe_exit(1);
                 }
             }
             i += EVENT_SIZE + ev->len;

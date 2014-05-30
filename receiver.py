@@ -21,19 +21,20 @@ NUM_SECONDS_PER_FILE = 10
 
 parsed = [] # Stores parsed sync_output structs
 
+csv_mode = False
+
 # Check command line arguments
-if len(argv) not in (3, 4, 1):
-    print 'Usage: ./receiver.py <archiver url> <subscription key> [<num seconds per publish>]'
-    print 'OR ./receiver.py to write to CSV file instead (included for testing purposes only)'
+if len(argv) not in (3, 4) or (len(argv) == 4 and argv[1] == '-c') or (len(argv) == 3 and argv[1] != '-c'):
+    print 'Usage: ./receiver.py <archiver url> <subscription key> <num clock seconds per publish>'
+    print 'OR ./receiver.py -c <num data seconds per file> to write to CSV file instead (included for testing purposes only)'
     exit()
-elif len(argv) == 1:
+elif argv[1] == '-c':
+    csv_mode = True
     print 'In CSV mode'
     print 'Normal usage: ./receiver.py <archiver url> <subscription key> [<num seconds per publish>]'
 
-if len(argv) == 4:
-    NUM_SECONDS_PER_FILE = int(argv[3])
-
-if len(argv) == 1:
+if csv_mode:
+    NUM_SECONDS_PER_FILE = int(argv[2])
     # The first row of every csv file has lables
     firstrow = ['time', 'lockstate']
     for start in ('L', 'C'):
@@ -43,6 +44,7 @@ if len(argv) == 1:
     firstrow.extend(['satellites', 'hasFix'])
 else:
     # Make streams for publishing
+    NUM_SECONDS_PER_FILE = int(argv[3])
     from ssmap import Ssstream
     L1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Mag', None, 'ns', 'V', 'UTC', [], argv[1], argv[2]), []]
     L1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Ang', None, 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
@@ -85,7 +87,7 @@ def process(data):
     processed, they are converted to a CSV file"""
     with datalock:
         parsed.extend(parse(data))
-    if len(argv) == 1 and len(parsed) >= NUM_SECONDS_PER_FILE:
+    if csv_mode and len(parsed) >= NUM_SECONDS_PER_FILE:
         publish()
 
 def check_duplicates(sorted_struct_list):
@@ -145,6 +147,8 @@ def publish():
 
 def write_csv():
     global numouts, parsed
+    if not parsed:
+        return
     parsed.sort(key=lambda x: x.sync_data.times)
     check_duplicates(parsed)
     if not os.path.exists('output/'):
@@ -187,7 +191,7 @@ def write_csv():
 t = None # A timer for publishing repeatedly
 restart = True # Determines whether data will be published again
 
-if len(argv) == 1:
+if csv_mode:
     publish = write_csv
 else:
     # Set up thread for publishing repeatedly
