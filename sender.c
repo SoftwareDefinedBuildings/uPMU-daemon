@@ -1,7 +1,7 @@
 #define EVENT_BUF_LEN 128 * ( sizeof (struct inotify_event) )
 #define EVENT_SIZE  ( sizeof (struct inotify_event) )
 #define ADDRESSP 1883
-#define NUMTRIES 10 // the number of times to try sending a file until giving up
+#define TIMEDELAY 10 // the number of seconds to wait between subsequent tries to reconnect
 
 #include <errno.h>
 #include <signal.h>
@@ -60,25 +60,19 @@ void safe_exit(int arg)
 
 int send_until_success(int* socket_descriptor, const char* filepath, int inRootDir)
 {
-    int numTries = 0;
     int result;
-    while ((result = send_file(*socket_descriptor, filepath, inRootDir)) == -1 && numTries < NUMTRIES)
+    while ((result = send_file(*socket_descriptor, filepath, inRootDir)) == -1)
     {
-        connected = 0;
-        if (numTries == 0)
+        if (connected)
         {
             close_connection(*socket_descriptor);
+            connected = 0;
         }
-        numTries++;
-        printf("Attempting to reconnect (attempt #%d)\n", numTries);
+        sleep(TIMEDELAY);
+        printf("Attempting to reconnect...\n");
         *socket_descriptor = make_socket();
-        connected = 1;
     }
-    if (numTries == NUMTRIES)
-    {
-        connected = 0;
-        exit(1);
-    }
+    connected = 1;
     return result;
 }
 
@@ -216,6 +210,7 @@ int processdir(const char* dirpath, int* socket_descriptor, int depth)
     struct dirent* subdir;
     struct stat pathStats;
     errno = 0;
+    int result;
     while ((subdir = readdir(directory)) != NULL)
     {
         if (strcmp(subdir->d_name, ".") != 0 && strcmp(subdir->d_name, "..") != 0)
@@ -239,7 +234,11 @@ int processdir(const char* dirpath, int* socket_descriptor, int depth)
             }
             else if (S_ISREG(pathStats.st_mode))
             {
-                send_until_success(socket_descriptor, fullpath, depth == 0);
+                result = send_until_success(socket_descriptor, fullpath, depth == 0);
+                if (result == 1)
+                {
+                    printf("Could not read %s (file not sent when consuming initial directory)\n", fullpath);
+                }
             }
         }
     }
@@ -306,28 +305,17 @@ int main(int argc, char* argv[])
         safe_exit(1);
     }
     server_addr = (struct sockaddr*) &server;
+    connected = 0;
+    printf("Attempting to connect...\n");
     socket_des = make_socket();
-    connected = 1;
-    int numTries = 0;
-    while (socket_des == -1 && numTries < NUMTRIES)
+    while (socket_des == -1)
     {
-        connected = 0;
-        numTries++;
-        printf("Connecting (attempt #%d)...\n", numTries);
-        connected = 1;
+        sleep(TIMEDELAY);
+        printf("Attempting to connect...\n");
         socket_des = make_socket();
     }
-    if (numTries == NUMTRIES)
-    {
-        connected = 0;
-        printf("Could not connect to server\n");
-        printf("Closing program\n");
-        safe_exit(1);
-    }
-    else
-    {
-        printf("Connection successful\n");
-    }
+    connected = 1;
+    printf("Connection successful\n");
     
     int numsubdirs;
     // Process existing files on startup
@@ -522,12 +510,6 @@ int main(int argc, char* argv[])
                 if (result == 1)
                 {
                     printf("Could not read %s (file not sent)\n", ev->name);
-                }
-                else if (result == -1)
-                {
-                    printf("Connection to server was lost, could not reconnect\n");
-                    printf("Closing program\n");
-                    safe_exit(1);
                 }
             }
             i += EVENT_SIZE + ev->len;

@@ -209,6 +209,32 @@ def write_csv():
 t = None # A timer for publishing repeatedly
 restart = True # Determines whether data will be published again
 
+def receive_all_data(socket, numbytes):
+    data = ''
+    while numbytes > 0:
+        newdata = socket.recv(numbytes)
+        if len(newdata) <= 0:
+            raise ConnectionTerminatedException('Could not receive data')
+        numbytes -= len(newdata)
+        data += newdata
+    return data
+
+def close_connection():
+    if connected:
+        connect_socket.shutdown(socket.SHUT_RDWR)
+        connect_socket.close()
+    server_socket.shutdown(socket.SHUT_RDWR)
+    server_socket.close()
+
+# Receive and process data
+connected = False
+server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+try:
+    server_socket.bind(('', ADDRESSP))
+except socket.error as se:
+    print 'Could not set up server socket: {0}'.format(se)
+    exit()
+
 if csv_mode:
     publish = write_csv
 else:
@@ -222,28 +248,7 @@ else:
     # Start publishing repeatedly
     publish_repeatedly()
 
-def receive_all_data(socket, numbytes):
-    data = ''
-    while numbytes > 0:
-        newdata = socket.recv(numbytes)
-        if len(newdata) <= 0:
-            raise ConnectionTerminatedException('Could not receive data')
-        numbytes -= len(newdata)
-        data += newdata
-    return data
-
-def close_connection():
-    server_socket.shutdown(socket.SHUT_RDWR)
-    server_socket.close()
-    if connected:
-        connect_socket.shutdown(socket.SHUT_RDWR)
-        connect_socket.close()
-
-# Receive and process data
-connected = False
-server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
 try:
-    server_socket.bind(('localhost', ADDRESSP))
     server_socket.listen(10)
     connect_socket, connect_addr = server_socket.accept()
     print 'Accepted connection'
