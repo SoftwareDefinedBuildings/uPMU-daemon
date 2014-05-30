@@ -138,6 +138,8 @@ def publish():
                 print 'Could not publish stream'
         if success:
             print 'Successfully published to {0}'.format(argv[1])
+    except KeyboardInterrupt:
+        success = False
     except BaseException as be:
         success = False
         print 'WARNING: publish could not be completed due to exception'
@@ -237,8 +239,11 @@ def close_connection():
     server_socket.shutdown(socket.SHUT_RDWR)
     server_socket.close()
     if connected:
-        connect_socket.shutdown(socket.SHUT_RDWR)
-        connect_socket.close()
+        try:
+            connect_socket.shutdown(socket.SHUT_RDWR)
+            connect_socket.close()
+        except socket.error:
+            print 'Connection closed'
 
 # Receive and process data
 connected = False
@@ -287,8 +292,14 @@ except KeyboardInterrupt:
 except:
     raise
 finally:
-    restart = False
-    if t is not None:
-        t.cancel()
-    publish()
-    close_connection()
+    try:
+        close_connection() # I don't think there will be any problems here...
+    except BaseException as be:
+        print 'Exception:'
+        traceback.print_exc()
+    finally: #... but the final publish needs to be done no matter what
+        restart = False
+        if t is not None:
+            t.cancel()
+        publish()
+        exit()

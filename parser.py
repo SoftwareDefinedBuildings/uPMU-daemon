@@ -76,8 +76,11 @@ def parse_sync_gps_stats(string):
 def parse_sync_output(string):
     """ Parses the beginning of STRING as a sync_output. Returns the
     corresponding sync_output object and the remainder of the string. """
+    orig_string = string
     f1, string = parse_sync_output_msgq(string)
     f2, string = parse_sync_pll_stats_msgq(string)
     f3, string = parse_sync_gps_stats(string)
-    return sync_output(f1, f2, f3), string
+    output = sync_output(f1, f2, f3)
+    output.data = orig_string
+    return output, string
 

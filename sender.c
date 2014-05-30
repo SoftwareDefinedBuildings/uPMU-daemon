@@ -1,4 +1,4 @@
-#define EVENT_BUF_LEN 128
+#define EVENT_BUF_LEN 128 * ( sizeof (struct inotify_event) )
 #define EVENT_SIZE  ( sizeof (struct inotify_event) )
 #define ADDRESSP 1883
 #define NUMTRIES 10 // the number of times to try sending a file until giving up
