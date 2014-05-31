@@ -54,8 +54,6 @@ else:
     satellites = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Number of Satellites', 'b7f7b0a2-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
     streams = (L1Mag, L1Ang, C1Mag, C1Ang, satellites)
 
-    streams = (L1Mag, L1Ang, C1Mag, C1Ang, satellites)
-
 # Lock on data (to avoid concurrent writing to "parsed")
 datalock = threading.Lock()
 
