@@ -47,11 +47,13 @@ else:
     # UUIDs were generated with calls to str(uuid.uuid1()) 5 times after importing uuid
     NUM_SECONDS_PER_FILE = int(argv[3])
     from ssmap import Ssstream
-    L1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Mag', 'aa9de908-e852-11e3-bb4a-0026b6df9cf2', 'ns', 'V', 'UTC', [], argv[1], argv[2]), []]
-    L1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Ang', 'ac2cb7ae-e852-11e3-bb4a-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
-    C1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Mag', 'ac883c82-e852-11e3-bb4a-0026b6df9cf2', 'ns', 'A', 'UTC', [], argv[1], argv[2]), []]
-    C1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Ang', 'ace4c4c0-e852-11e3-bb4a-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
-    satellites = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'satellites', 'ad37290e-e852-11e3-bb4a-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
+    L1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Magnitude', 'b2e11644-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'V', 'UTC', [], argv[1], argv[2]), []]
+    L1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Angle', 'b4000378-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
+    C1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Magnitude', 'b51e3af4-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'A', 'UTC', [], argv[1], argv[2]), []]
+    C1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Angle', 'b68f8e92-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
+    satellites = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Number of Satellites', 'b7f7b0a2-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
+    streams = (L1Mag, L1Ang, C1Mag, C1Ang, satellites)
+
     streams = (L1Mag, L1Ang, C1Mag, C1Ang, satellites)
 
 # Lock on data (to avoid concurrent writing to "parsed")
