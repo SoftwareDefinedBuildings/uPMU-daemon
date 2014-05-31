@@ -12,6 +12,7 @@ import traceback
 
 from parser import sync_output, parse_sync_output
 from sys import argv
+from utils import check_duplicates, lst_to_rows
 
 numouts = 0
 
@@ -23,40 +24,6 @@ parsed = [] # Stores parsed sync_output structs
 
 csv_mode = False
 
-# Check command line arguments
-if len(argv) not in (3, 4) or (len(argv) == 4 and argv[1] == '-c') or (len(argv) == 3 and argv[1] != '-c'):
-    print 'Usage: ./receiver.py <archiver url> <subscription key> <num clock seconds per publish>'
-    print 'OR ./receiver.py -c <num data seconds per file> to write to CSV file instead (included for testing purposes only)'
-    exit()
-elif argv[1] == '-c':
-    csv_mode = True
-    print 'In CSV mode'
-    print 'Normal usage: ./receiver.py <archiver url> <subscription key> [<num seconds per publish>]'
-
-if csv_mode:
-    NUM_SECONDS_PER_FILE = int(argv[2])
-    # The first row of every csv file has lables
-    firstrow = ['time', 'lockstate']
-    for start in ('L', 'C'):
-        for num in xrange(1, 4):
-            for end in ('Ang', 'Mag'):
-                firstrow.append('{0}{1}{2}'.format(start, num, end))
-    firstrow.extend(['satellites', 'hasFix'])
-else:
-    # Make streams for publishing
-    # UUIDs were generated with calls to str(uuid.uuid1()) 5 times after importing uuid
-    NUM_SECONDS_PER_FILE = int(argv[3])
-    from ssmap import Ssstream
-    L1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Magnitude', 'b2e11644-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'V', 'UTC', [], argv[1], argv[2]), []]
-    L1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Angle', 'b4000378-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
-    C1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Magnitude', 'b51e3af4-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'A', 'UTC', [], argv[1], argv[2]), []]
-    C1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Angle', 'b68f8e92-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
-    satellites = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Number of Satellites', 'b7f7b0a2-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
-    streams = (L1Mag, L1Ang, C1Mag, C1Ang, satellites)
-
-# Lock on data (to avoid concurrent writing to "parsed")
-datalock = threading.Lock()
-
 class ConnectionTerminatedException(RuntimeError):
     pass
     
@@ -67,19 +34,14 @@ def parse(string):
     """ Parses data (in the form of STRING) into a series of sync_output
 objects. Returns a list of sync_output objects. If STRING is not of a
 suitable length (i.e., if the number of bytes is not some multiple of
-the length of a sync_output struct) a RuntimeError is raised. """
+the length of a sync_output struct) a ParseException is raised. """
     if len(string) % sync_output.LENGTH != 0:
-        raise RuntimeError('Input to \"parse\" does not contain whole number of \"sync_output\"s ({0} extra bytes)'.format(len(string) % sync_output.LENGTH))
+        raise ParseException('Input to \"parse\" does not contain whole number of \"sync_output\"s ({0} extra bytes)'.format(len(string) % sync_output.LENGTH))
     lst = []
     while string:
         obj, string = parse_sync_output(string)
         lst.append(obj)
     return lst
-
-def time_to_nanos(lst):
-    """ Converts the time as given in a time[] array into nanoseconds since
-the epoch. """
-    return 1000000000 * calendar.timegm(datetime.datetime(*lst).utctimetuple())
     
 
 def process(data):
@@ -93,20 +55,6 @@ processed, they are converted to a CSV file"""
         datalock.release()
     if csv_mode and len(parsed) >= NUM_SECONDS_PER_FILE:
         publish()
-
-def check_duplicates(sorted_struct_list):
-    # Check if the structs have duplicates or missing items, print warnings if so
-    dates = tuple(datetime.datetime(*s.sync_data.times) for s in sorted_struct_list)
-    i = 1
-    while i < len(dates):
-        date1 = dates[i-1]
-        date2 = dates[i]
-        delta = int((date2 - date1).total_seconds() + 0.5) # round difference to nearest second
-        if delta == 0:
-            print 'WARNING: duplicate record for {0}'.format(str(date2))
-        elif delta != 1:
-            print 'WARNING: missing record(s) (skips from {0} to {1})'.format(str(date1), str(date2))
-        i += 1
         
 def publish():
     global parsed
@@ -189,26 +137,8 @@ def write_csv():
     f = open('output/out{0}.csv'.format(numouts), 'wb')
     writer = csv.writer(f)
     writer.writerow(firstrow)
-    rows = []
-    for s in parsed:
-        basetime = time_to_nanos(s.sync_data.times)
-        # it seems s.sync_data.sampleRate is the number of milliseconds between samples
-        timedelta = 1000000 * s.sync_data.sampleRate # nanoseconds between samples
-        i = 0
-        while i < 120:
-            row = []
-            row.append(basetime + int((i * timedelta) + 0.5))
-            row.append(s.sync_data.lockstate[i])
-            for start in ('L', 'C'):
-                for num in xrange(1, 4):
-                    attribute = getattr(s.sync_data, '{0}{1}MagAng'.format(start, num))
-                    row.append(attribute[i].angle)
-                    row.append(attribute[i].mag)
-            row.append(s.gps_stats.satellites)
-            row.append(s.gps_stats.hasFix)
-            i += 1
-            rows.append(row)
-    writer.writerows(rows)
+    writer.writerows(lst_to_rows(parsed))
+    f.close()
     parsed = []
     return True
 
@@ -232,6 +162,40 @@ def close_connection():
         connect_socket.close()
     server_socket.shutdown(socket.SHUT_RDWR)
     server_socket.close()
+    
+# Check command line arguments
+if len(argv) not in (3, 4) or (len(argv) == 4 and argv[1] == '-c') or (len(argv) == 3 and argv[1] != '-c'):
+    print 'Usage: ./receiver.py <archiver url> <subscription key> <num clock seconds per publish>'
+    print 'OR ./receiver.py -c <num data seconds per file> to write to CSV file instead (included for testing purposes only)'
+    exit()
+elif argv[1] == '-c':
+    csv_mode = True
+    print 'In CSV mode'
+    print 'Normal usage: ./receiver.py <archiver url> <subscription key> [<num seconds per publish>]'
+
+if csv_mode:
+    NUM_SECONDS_PER_FILE = int(argv[2])
+    # The first row of every csv file has lables
+    firstrow = ['time', 'lockstate']
+    for start in ('L', 'C'):
+        for num in xrange(1, 4):
+            for end in ('Ang', 'Mag'):
+                firstrow.append('{0}{1}{2}'.format(start, num, end))
+    firstrow.extend(['satellites', 'hasFix'])
+else:
+    # Make streams for publishing
+    # UUIDs were generated with calls to str(uuid.uuid1()) 5 times after importing uuid
+    NUM_SECONDS_PER_FILE = int(argv[3])
+    from ssmap import Ssstream
+    L1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Magnitude', 'b2e11644-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'V', 'UTC', [], argv[1], argv[2]), []]
+    L1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Angle', 'b4000378-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
+    C1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Magnitude', 'b51e3af4-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'A', 'UTC', [], argv[1], argv[2]), []]
+    C1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Angle', 'b68f8e92-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
+    satellites = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Number of Satellites', 'b7f7b0a2-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
+    streams = (L1Mag, L1Ang, C1Mag, C1Ang, satellites)
+
+# Lock on data (to avoid concurrent writing to "parsed")
+datalock = threading.Lock()
 
 # Receive and process data
 connected = False
@@ -276,7 +240,10 @@ try:
             data = receive_all_data(connect_socket, lengthd)
             
             # Process the data
-            process(data)
+            try:
+                process(data)
+            except ParseException:
+                sendid = '\x00\x00\x00\x00'
             
             # Send confirmation of receipt
             bytesSent = 0

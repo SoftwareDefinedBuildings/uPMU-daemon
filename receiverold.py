@@ -12,6 +12,7 @@ import traceback
 
 from parser import sync_output, parse_sync_output
 from sys import argv
+from utils import check_duplicates, lst_to_rows
 
 numouts = 0
 
@@ -67,19 +68,14 @@ def parse(string):
     """ Parses data (in the form of STRING) into a series of sync_output
 objects. Returns a list of sync_output objects. If STRING is not of a
 suitable length (i.e., if the number of bytes is not some multiple of
-the length of a sync_output struct) a RuntimeError is raised. """
+the length of a sync_output struct) a ParseException is raised. """
     if len(string) % sync_output.LENGTH != 0:
-        raise RuntimeError('Input to \"parse\" does not contain whole number of \"sync_output\"s ({0} extra bytes)'.format(len(string) % sync_output.LENGTH))
+        raise ParseException('Input to \"parse\" does not contain whole number of \"sync_output\"s ({0} extra bytes)'.format(len(string) % sync_output.LENGTH))
     lst = []
     while string:
         obj, string = parse_sync_output(string)
         lst.append(obj)
     return lst
-
-def time_to_nanos(lst):
-    """ Converts the time as given in a time[] array into nanoseconds since
-the epoch. """
-    return 1000000000 * calendar.timegm(datetime.datetime(*lst).utctimetuple())
     
 
 def process(data):
@@ -186,26 +182,8 @@ def write_csv():
     f = open('output/out{0}.csv'.format(numouts), 'wb')
     writer = csv.writer(f)
     writer.writerow(firstrow)
-    rows = []
-    for s in parsed:
-        basetime = time_to_nanos(s.sync_data.times)
-        # it seems s.sync_data.sampleRate is the number of milliseconds between samples
-        timedelta = 1000000 * s.sync_data.sampleRate # nanoseconds between samples
-        i = 0
-        while i < 120:
-            row = []
-            row.append(basetime + int((i * timedelta) + 0.5))
-            row.append(s.sync_data.lockstate[i])
-            for start in ('L', 'C'):
-                for num in xrange(1, 4):
-                    attribute = getattr(s.sync_data, '{0}{1}MagAng'.format(start, num))
-                    row.append(attribute[i].angle)
-                    row.append(attribute[i].mag)
-            row.append(s.gps_stats.satellites)
-            row.append(s.gps_stats.hasFix)
-            i += 1
-            rows.append(row)
-    writer.writerows(rows)
+    writer.writerows(lst_to_rows(parsed))
+    f.close()
     parsed = []
     return True
 
@@ -272,7 +250,10 @@ try:
             data = receive_all_data(connect_socket, lengthd)
             
             # Process the data
-            process(data)
+            try:
+                process(data)
+            except ParseException:
+                sendid = '\x00\x00\x00\x00'
             
             # Send confirmation of receipt
             bytesSent = 0
