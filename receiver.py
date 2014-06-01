@@ -12,7 +12,7 @@ import traceback
 
 from parser import sync_output, parse_sync_output
 from sys import argv
-from utils import check_duplicates, lst_to_rows
+from utils import *
 
 numouts = 0
 
