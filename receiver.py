@@ -24,6 +24,40 @@ parsed = [] # Stores parsed sync_output structs
 
 csv_mode = False
 
+# Check command line arguments
+if len(argv) not in (3, 4) or (len(argv) == 4 and argv[1] == '-c') or (len(argv) == 3 and argv[1] != '-c'):
+    print 'Usage: ./receiver.py <archiver url> <subscription key> <num clock seconds per publish>'
+    print 'OR ./receiver.py -c <num data seconds per file> to write to CSV file instead (included for testing purposes only)'
+    exit()
+elif argv[1] == '-c':
+    csv_mode = True
+    print 'In CSV mode'
+    print 'Normal usage: ./receiver.py <archiver url> <subscription key> [<num seconds per publish>]'
+
+if csv_mode:
+    NUM_SECONDS_PER_FILE = int(argv[2])
+    # The first row of every csv file has lables
+    firstrow = ['time', 'lockstate']
+    for start in ('L', 'C'):
+        for num in xrange(1, 4):
+            for end in ('Ang', 'Mag'):
+                firstrow.append('{0}{1}{2}'.format(start, num, end))
+    firstrow.extend(['satellites', 'hasFix'])
+else:
+    # Make streams for publishing
+    # UUIDs were generated with calls to str(uuid.uuid1()) 5 times after importing uuid
+    NUM_SECONDS_PER_FILE = int(argv[3])
+    from ssmap import Ssstream
+    L1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Magnitude', 'b2e11644-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'V', 'UTC', [], argv[1], argv[2]), [], threading.Lock()]
+    L1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Angle', 'b4000378-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), [], threading.Lock()]
+    C1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Magnitude', 'b51e3af4-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'A', 'UTC', [], argv[1], argv[2]), [], threading.Lock()]
+    C1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Angle', 'b68f8e92-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), [], threading.Lock()]
+    satellites = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Number of Satellites', 'b7f7b0a2-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), [], threading.Lock()]
+    streams = (L1Mag, L1Ang, C1Mag, C1Ang, satellites)
+
+# Lock on data (to avoid concurrent writing to "parsed")
+datalock = threading.Lock()
+
 class ConnectionTerminatedException(RuntimeError):
     pass
     
@@ -85,9 +119,11 @@ def publish():
     try:
         for stream in streams:
             stream[0].set_readings(stream[1])
-            if not stream[0].publish():
-                success = False
-                print 'Could not publish stream'
+        for stream in streams:
+            with stream[2]:
+                if not stream[0].publish():
+                    success = False
+                    print 'Could not publish stream'
         if success:
             print 'Successfully published to {0}'.format(argv[1])
     except KeyboardInterrupt:
@@ -110,7 +146,7 @@ def publish():
             while numouts > 0 and not os.path.exists('output/out{0}.dat'.format(numouts)):
                 numouts -= 1
             numouts += 1
-            backup = open('output/out{0}.dat'.format(numouts), 'w')
+            backup = open('output/out{0}.dat'.format(numouts), 'wb')
             for s in parsedcopy:
                 backup.write(s.data)
             backup.close()
@@ -162,40 +198,6 @@ def close_connection():
         connect_socket.close()
     server_socket.shutdown(socket.SHUT_RDWR)
     server_socket.close()
-    
-# Check command line arguments
-if len(argv) not in (3, 4) or (len(argv) == 4 and argv[1] == '-c') or (len(argv) == 3 and argv[1] != '-c'):
-    print 'Usage: ./receiver.py <archiver url> <subscription key> <num clock seconds per publish>'
-    print 'OR ./receiver.py -c <num data seconds per file> to write to CSV file instead (included for testing purposes only)'
-    exit()
-elif argv[1] == '-c':
-    csv_mode = True
-    print 'In CSV mode'
-    print 'Normal usage: ./receiver.py <archiver url> <subscription key> [<num seconds per publish>]'
-
-if csv_mode:
-    NUM_SECONDS_PER_FILE = int(argv[2])
-    # The first row of every csv file has lables
-    firstrow = ['time', 'lockstate']
-    for start in ('L', 'C'):
-        for num in xrange(1, 4):
-            for end in ('Ang', 'Mag'):
-                firstrow.append('{0}{1}{2}'.format(start, num, end))
-    firstrow.extend(['satellites', 'hasFix'])
-else:
-    # Make streams for publishing
-    # UUIDs were generated with calls to str(uuid.uuid1()) 5 times after importing uuid
-    NUM_SECONDS_PER_FILE = int(argv[3])
-    from ssmap import Ssstream
-    L1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Magnitude', 'b2e11644-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'V', 'UTC', [], argv[1], argv[2]), []]
-    L1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Angle', 'b4000378-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
-    C1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Magnitude', 'b51e3af4-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'A', 'UTC', [], argv[1], argv[2]), []]
-    C1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Angle', 'b68f8e92-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
-    satellites = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Number of Satellites', 'b7f7b0a2-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), []]
-    streams = (L1Mag, L1Ang, C1Mag, C1Ang, satellites)
-
-# Lock on data (to avoid concurrent writing to "parsed")
-datalock = threading.Lock()
 
 # Receive and process data
 connected = False

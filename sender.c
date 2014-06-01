@@ -39,7 +39,7 @@ int connected = 0;
 // pointer to the server address
 struct sockaddr* server_addr;
 
-uint32_t sendid = 0;
+uint32_t sendid = 1;
 
 /* Close the socket connection. */
 void close_connection(int socket_descriptor)
@@ -179,8 +179,7 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
     
     if (response != sendid++)
     {
-        printf("Received improper confirmation of receipt of %s (got %d)\n", filepath, response);
-        return -1;
+        printf("Received improper confirmation of receipt of %s (will not be deleted)\n", filepath);
     }
     else
     {
