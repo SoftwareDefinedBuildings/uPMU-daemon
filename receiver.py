@@ -48,11 +48,11 @@ else:
     # UUIDs were generated with calls to str(uuid.uuid1()) 5 times after importing uuid
     NUM_SECONDS_PER_FILE = int(argv[3])
     from ssmap import Ssstream
-    L1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Magnitude', 'b2e11644-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'V', 'UTC', [], argv[1], argv[2]), [], threading.Lock()]
-    L1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'L1 Angle', 'b4000378-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), [], threading.Lock()]
-    C1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Magnitude', 'b51e3af4-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'A', 'UTC', [], argv[1], argv[2]), [], threading.Lock()]
-    C1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'C1 Angle', 'b68f8e92-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), [], threading.Lock()]
-    satellites = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Number of Satellites', 'b7f7b0a2-e8e3-11e3-b955-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), [], threading.Lock()]
+    L1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Magnitude L1', 'cb94c3ae-ea6c-11e3-9da9-002590e8ec24', 'ns', 'V', 'UTC', [], argv[1], argv[2]), threading.Lock()]
+    L1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Angle L1', 'd5c48544-ea6c-11e3-9da9-002590e8ec24', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), threading.Lock()]
+    C1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Magnitude C1', 'dd4c9824-ea6c-11e3-9da9-002590e8ec24', 'ns', 'A', 'UTC', [], argv[1], argv[2]), threading.Lock()]
+    C1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Angle C1', 'e4d2cf6e-ea6c-11e3-9da9-002590e8ec24', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), threading.Lock()]
+    satellites = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Satellite Number', 'ed5c3260-ea6c-11e3-9da9-002590e8ec24', 'ns', 'no.', 'UTC', [], argv[1], argv[2]), threading.Lock()]
     streams = (L1Mag, L1Ang, C1Mag, C1Ang, satellites)
 
 # Lock on data (to avoid concurrent writing to "parsed")
@@ -88,42 +88,41 @@ processed, they are converted to a CSV file"""
     finally:
         datalock.release()
     if csv_mode and len(parsed) >= NUM_SECONDS_PER_FILE:
-        publish()
+        publishThread = threading.Thread(target = publish)
+        publishThread.start()
         
 def publish():
     global parsed
     success = True
-    datalock.acquire()
-    if not parsed:
-        datalock.release()
-        return True
-    parsedcopy = parsed
-    parsed = []
-    datalock.release()
-    print 'Publishing...'
-    parsedcopy.sort(key=lambda x: x.sync_data.times)
-    check_duplicates(parsedcopy)
-    for stream in streams:
-        stream[1] = []
-    for s in parsedcopy:
-       basetime = time_to_nanos(s.sync_data.times)
-       # it seems s.sync_data.sampleRate is the number of milliseconds between samples
-       timedelta = 1000000 * s.sync_data.sampleRate # nanoseconds between samples
-       for i in xrange(120):
-           currtime = basetime + int((i * timedelta) + 0.5)
-           L1Mag[1].append((currtime, s.sync_data.L1MagAng[i].mag))
-           L1Ang[1].append((currtime, s.sync_data.L1MagAng[i].angle))
-           C1Mag[1].append((currtime, s.sync_data.C1MagAng[i].mag))
-           C1Ang[1].append((currtime, s.sync_data.C1MagAng[i].angle))
-           satellites[1].append((currtime, s.gps_stats.satellites))
+    with datalock:
+        if not parsed:
+            return True
+        parsedcopy = parsed
+        parsed = []
     try:
+        print 'Publishing...'
+        parsedcopy.sort(key=lambda x: x.sync_data.times)
+        check_duplicates(parsedcopy)
+        streamLists = tuple([] for _ in streams)
+        for s in parsedcopy:
+           basetime = time_to_nanos(s.sync_data.times)
+           # it seems s.sync_data.sampleRate is the number of milliseconds between samples
+           timedelta = 1000000 * s.sync_data.sampleRate # nanoseconds between samples
+           for i in xrange(120):
+               currtime = basetime + int((i * timedelta) + 0.5)
+               streamLists[0].append((currtime, s.sync_data.L1MagAng[i].mag))
+               streamLists[1].append((currtime, s.sync_data.L1MagAng[i].angle))
+               streamLists[2].append((currtime, s.sync_data.C1MagAng[i].mag))
+               streamLists[3].append((currtime, s.sync_data.C1MagAng[i].angle))
+               streamLists[4].append((currtime, s.gps_stats.satellites))
+        streamIndex = 0
         for stream in streams:
-            stream[0].set_readings(stream[1])
-        for stream in streams:
-            with stream[2]:
+            with stream[1]:
+                stream[0].set_readings(streamLists[1])
                 if not stream[0].publish():
                     success = False
                     print 'Could not publish stream'
+                streamIndex += 1
         if success:
             print 'Successfully published to {0}'.format(argv[1])
     except KeyboardInterrupt:
@@ -138,45 +137,61 @@ def publish():
         if success:
             return True
         else:
-            print 'Writing backup...' # on failure, write data to file if it could not be published
-            if not os.path.exists('output/'):
-                os.mkdir('output/')
-            numfiles = len(os.listdir('output/'))
-            numouts = numfiles
-            while numouts > 0 and not os.path.exists('output/out{0}.dat'.format(numouts)):
-                numouts -= 1
-            numouts += 1
-            backup = open('output/out{0}.dat'.format(numouts), 'wb')
-            for s in parsedcopy:
-                backup.write(s.data)
-            backup.close()
-            print 'Done writing backup.'
+            if datalock.locked():
+                datalock.release()
+            write_backup(parsedcopy) # on failure, write data to file if it could not be published
             return False
 
 def write_csv():
-    global numouts, parsed
-    if not parsed:
-        return
-    parsed.sort(key=lambda x: x.sync_data.times)
-    check_duplicates(parsed)
-    if not os.path.exists('output/'):
-        os.mkdir('output/')
-    elif numouts == 0:
-        numfiles = len(os.listdir('output/'))
-        while not os.path.exists('output/out{0}.csv'.format(numouts)):
-            numouts -= 1
-        numouts += 1
-    else:
-        while os.path.exists('output/out{0}.csv'.format(numouts)):
-            numouts += 1
-    print 'Writing file output/out{0}.csv'.format(numouts)
-    f = open('output/out{0}.csv'.format(numouts), 'wb')
-    writer = csv.writer(f)
-    writer.writerow(firstrow)
-    writer.writerows(lst_to_rows(parsed))
-    f.close()
-    parsed = []
-    return True
+    global parsed
+    success = True
+    with datalock:
+        if not parsed:
+            return
+        parsedcopy = parsed
+        parsed = []
+    try:
+        parsedcopy.sort(key=lambda x: x.sync_data.times)
+        check_duplicates(parsedcopy)
+        firstTime = time_to_str(parsedcopy[0].sync_data.times)
+        lastTime = time_to_str(parsedcopy[-1].sync_data.times)
+        if not os.path.exists('output/'):
+            os.mkdir('output/')
+        filename = 'output/out__{0}__{1}.csv'.format(firstTime, lastTime)
+        print 'Writing file {0}'.format(filename)
+        with open(filename, 'wb') as f:
+            writer = csv.writer(f)
+            writer.writerow(firstrow)
+            writer.writerows(lst_to_rows(parsedcopy))
+    except KeyboardInterrupt:
+        success = False
+    except BaseException as be:
+        success = False
+        print 'WARNING: publish could not be completed due to exception'
+        print 'Details: {0}'.format(be)
+        print 'Traceback:'
+        traceback.print_exc()
+    finally:
+        if success:
+            return True
+        else:
+            write_backup(parsedcopy)
+            return False
+    
+def write_backup(structs):
+    print 'Writing backup...' # on failure, write data to file if it could not be published
+    if not os.path.exists('backup/'):
+        os.mkdir('backup/')
+    numfiles = len(os.listdir('backup/'))
+    numouts = numfiles
+    while numouts > 0 and not os.path.exists('backup/backup{0}.dat'.format(numouts)):
+        numouts -= 1
+    numouts += 1
+    backup = open('backup/backup{0}.dat'.format(numouts), 'wb')
+    for s in structs:
+        backup.write(s.data)
+    backup.close()
+    print 'Done writing backup.'
 
 
 t = None # A timer for publishing repeatedly

@@ -243,8 +243,7 @@ int processdir(const char* dirpath, int* socket_descriptor, int depth)
     }
     if (errno != 0)
     {
-        printf("Could not finish reading directory %s\n", dirpath);
-        return -1;
+        printf("An error may have occurred processing %s; proceed with caution\n", dirpath);
     }
     return numsubdirs;
 }

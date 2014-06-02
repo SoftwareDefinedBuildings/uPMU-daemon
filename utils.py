@@ -21,6 +21,12 @@ def time_to_nanos(lst):
 the epoch. """
     return 1000000000 * calendar.timegm(datetime.datetime(*lst).utctimetuple())
     
+def time_to_str(lst):
+    """ Converts the time as given in a time[] array into a string representation. """
+    time_rep = str(datetime.datetime(*lst))
+    time_rep = time_rep.replace(' ', '_')
+    return time_rep
+    
 def lst_to_rows(parsed):
     rows = []
     for s in parsed:
