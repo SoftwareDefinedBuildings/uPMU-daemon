@@ -51,7 +51,7 @@ else:
     L1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Mag L1', '602e7098-ea93-11e3-a919-0026b6df9cf2', 'ns', 'V', 'UTC', [], argv[1], argv[2]), threading.Lock()]
     L1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Ang L1', '60cc155a-ea93-11e3-a919-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), threading.Lock()]
     C1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Mag C1', '61725c76-ea93-11e3-a919-0026b6df9cf2', 'ns', 'A', 'UTC', [], argv[1], argv[2]), threading.Lock()]
-    C1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'An C1', '61c86e5e-ea93-11e3-a919-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), threading.Lock()]
+    C1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Ang C1', '61c86e5e-ea93-11e3-a919-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), threading.Lock()]
     satellites = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Num Satellites', '6212599c-ea93-11e3-a919-0026b6df9cf2', 'ns', 'no.', 'UTC', [], argv[1], argv[2]), threading.Lock()]
     streams = (L1Mag, L1Ang, C1Mag, C1Ang, satellites)
 
@@ -122,7 +122,7 @@ def publish():
                 if not stream[0].publish():
                     success = False
                     print 'Could not publish stream'
-            streamIndex += 1
+                streamIndex += 1
         if success:
             print 'Successfully published to {0}'.format(argv[1])
     except KeyboardInterrupt:
