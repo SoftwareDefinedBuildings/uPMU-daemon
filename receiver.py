@@ -48,11 +48,11 @@ else:
     # UUIDs were generated with calls to str(uuid.uuid1()) 5 times after importing uuid
     NUM_SECONDS_PER_FILE = int(argv[3])
     from ssmap import Ssstream
-    L1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Magnitude L1', 'cb94c3ae-ea6c-11e3-9da9-002590e8ec24', 'ns', 'V', 'UTC', [], argv[1], argv[2]), threading.Lock()]
-    L1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Angle L1', 'd5c48544-ea6c-11e3-9da9-002590e8ec24', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), threading.Lock()]
-    C1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Magnitude C1', 'dd4c9824-ea6c-11e3-9da9-002590e8ec24', 'ns', 'A', 'UTC', [], argv[1], argv[2]), threading.Lock()]
-    C1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Angle C1', 'e4d2cf6e-ea6c-11e3-9da9-002590e8ec24', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), threading.Lock()]
-    satellites = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Satellite Number', 'ed5c3260-ea6c-11e3-9da9-002590e8ec24', 'ns', 'no.', 'UTC', [], argv[1], argv[2]), threading.Lock()]
+    L1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Mag L1', '602e7098-ea93-11e3-a919-0026b6df9cf2', 'ns', 'V', 'UTC', [], argv[1], argv[2]), threading.Lock()]
+    L1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Ang L1', '60cc155a-ea93-11e3-a919-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), threading.Lock()]
+    C1Mag = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Mag C1', '61725c76-ea93-11e3-a919-0026b6df9cf2', 'ns', 'A', 'UTC', [], argv[1], argv[2]), threading.Lock()]
+    C1Ang = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'An C1', '61c86e5e-ea93-11e3-a919-0026b6df9cf2', 'ns', 'deg', 'UTC', [], argv[1], argv[2]), threading.Lock()]
+    satellites = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Num Satellites', '6212599c-ea93-11e3-a919-0026b6df9cf2', 'ns', 'no.', 'UTC', [], argv[1], argv[2]), threading.Lock()]
     streams = (L1Mag, L1Ang, C1Mag, C1Ang, satellites)
 
 # Lock on data (to avoid concurrent writing to "parsed")
@@ -118,11 +118,11 @@ def publish():
         streamIndex = 0
         for stream in streams:
             with stream[1]:
-                stream[0].set_readings(streamLists[1])
+                stream[0].set_readings(streamLists[streamIndex])
                 if not stream[0].publish():
                     success = False
                     print 'Could not publish stream'
-                streamIndex += 1
+            streamIndex += 1
         if success:
             print 'Successfully published to {0}'.format(argv[1])
     except KeyboardInterrupt:
@@ -137,8 +137,6 @@ def publish():
         if success:
             return True
         else:
-            if datalock.locked():
-                datalock.release()
             write_backup(parsedcopy) # on failure, write data to file if it could not be published
             return False
 
