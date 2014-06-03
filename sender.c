@@ -1,7 +1,8 @@
 #define EVENT_BUF_LEN 128 * ( sizeof (struct inotify_event) )
 #define EVENT_SIZE  ( sizeof (struct inotify_event) )
 #define ADDRESSP 1883
-#define FULLPATHLEN 64
+#define FULLPATHLEN 64 // the maximum length of a full file path
+#define FILENAMELEN 28 // the maximum length of a file or directory name (within the root directory)
 #define TIMEDELAY 10 // the number of seconds to wait between subsequent tries to reconnect
 
 #include <errno.h>
@@ -17,6 +18,8 @@
 #include <sys/stat.h>
 #include <arpa/inet.h>
 
+/* When my comments refer to the "root directory", they mean the directory the program is watching */
+
 typedef struct 
 {
     int fd;
@@ -26,7 +29,7 @@ typedef struct
 typedef struct
 {
     long filenum;
-    char fullpath[FULLPATHLEN];
+    char filename[FILENAMELEN];
 } file_entry_t;
 
 watched_entry_t child;
@@ -109,8 +112,8 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
     
     // Find file path up to file's parent directory
     // Works assuming there is a parent directory (/.../file.dat)
-    char filepathAfterParent[256];
-    char filepathCopy[256];
+    char filepathAfterParent[FULLPATHLEN];
+    char filepathCopy[FULLPATHLEN];
     strcpy(filepathCopy, filepath);
     if (inRootDir)
     {
@@ -143,7 +146,7 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
     // Space is added to the end of filename so it is word-aligned.
     uint32_t size_word = (size & 0xFFFFFFFC) + 4; // size with extra bytes so it's word-aligned
     uint8_t data[12 + size_word + length] __attribute__((aligned(4)));
-    *((uint64_t*) data) = sendid;
+    *((uint32_t*) data) = sendid;
     *((uint32_t*) (data + 4)) = size;
     *((uint32_t*) (data + 8)) = length;
     strcpy(data + 12, filepathAfterParent);
@@ -176,9 +179,7 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
 
     uint32_t response;
     
-    // Get confirmation of receipt
-    printf("Waiting for confirmation of receipt...\n");
-    
+    // Get confirmation of receipt    
     dataleft = 4;
     while (dataleft > 0)
     {
@@ -208,6 +209,10 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
         {
             printf("Could not delete %s\n", filepath);
         }
+    }
+    if (sendid == 0xFFFFFFFFu)
+    {
+        sendid = 1;
     }
     return 0;
 }
@@ -239,6 +244,7 @@ long parse_filename(const char* filename)
     }
     if (*currchar == '\0')
     {
+        printf("Warning: file %s could not be ordered numerically\n", filename);
         return -1;
     }
     errno = 0;
@@ -256,14 +262,18 @@ int updaterootdir(const char* dirpath)
 {
     if (strlen(dirpath) >= FULLPATHLEN - 5)
     {
-        printf("%s all filepaths must be less than %d characters long\n", dirpath, FULLPATHLEN);
+        printf("%s too large: all filepaths must be less than %d characters long\n", dirpath, FULLPATHLEN);
         return -1;
     }
     strcpy(rootpath, dirpath);
-    rootdir = opendir(dirpath);
+    if (rootpath[strlen(rootpath) - 1] != '/')
+    {
+        strcat(rootpath, "/");
+    }
+    rootdir = opendir(rootpath);
     if (rootdir == NULL)
     {
-        printf("%s is not a valid directory\n", dirpath);
+        printf("%s is not a valid directory\n", rootpath);
         return -1;
     }
     struct dirent* subdir;
@@ -272,19 +282,19 @@ int updaterootdir(const char* dirpath)
     numsubdirs = 0;
     numfiles = 0;
     // Count the number of files and subdirectories in the dirpath
+    int pathlen;
+    char fullpath[FULLPATHLEN];
     while ((subdir = readdir(rootdir)) != NULL)
     {
         if (strcmp(subdir->d_name, ".") != 0 && strcmp(subdir->d_name, "..") != 0)
         {
-            int pathlen = strlen(dirpath) + strlen(subdir->d_name) + 2;
+            pathlen = strlen(rootpath) + strlen(subdir->d_name) + 1;
             if (pathlen > FULLPATHLEN)
             {
                 printf("Path length of %d found; max path length is %d\n", pathlen, FULLPATHLEN);
                 return -1;
             }
-            char fullpath[strlen(dirpath) + strlen(subdir->d_name) + 2];
-            strcpy(fullpath, dirpath);
-            strcat(fullpath, "/");
+            strcpy(fullpath, rootpath);
             strcat(fullpath, subdir->d_name);
             if (stat(fullpath, &pathStats) != 0)
             {
@@ -306,7 +316,7 @@ int updaterootdir(const char* dirpath)
 }
 
 /* Processes root directory, sending files and adding watches (uses information in global variables) */
-int processrootdir(int* socket_descriptor, char subdirnames[][FULLPATHLEN], watched_entry_t* subdirinfo, int inotify_fd, int* rootdir_fd)
+int processrootdir(int* socket_descriptor, char subdirnames[][FILENAMELEN], watched_entry_t* subdirinfo, int inotify_fd, int* rootdir_fd)
 {
     struct dirent* subdir;
     struct stat pathStats;
@@ -317,19 +327,19 @@ int processrootdir(int* socket_descriptor, char subdirnames[][FULLPATHLEN], watc
     // Add watch for root directory
     *rootdir_fd = inotify_add_watch(inotify_fd, rootpath, IN_CREATE | IN_CLOSE_WRITE);
     // Add files and directories to arrays
+    int pathlen;
+    char fullpath[FULLPATHLEN];
     while ((subdir = readdir(rootdir)) != NULL)
     {
         if (strcmp(subdir->d_name, ".") != 0 && strcmp(subdir->d_name, "..") != 0)
         {
-            int pathlen = strlen(rootpath) + strlen(subdir->d_name) + 2;
+            pathlen = strlen(rootpath) + strlen(subdir->d_name) + 2;
             if (pathlen > FULLPATHLEN)
             {
-                printf("Filepath length of %d found; max allowed is %d\n", pathlen, FULLPATHLEN);
+                printf("Filepath of length %d found; max allowed is %d\n", pathlen, FULLPATHLEN);
                 return -1;
             }
-            char fullpath[FULLPATHLEN];
             strcpy(fullpath, rootpath);
-            strcat(fullpath, "/");
             strcat(fullpath, subdir->d_name);
             if (stat(fullpath, &pathStats) != 0)
             {
@@ -338,13 +348,24 @@ int processrootdir(int* socket_descriptor, char subdirnames[][FULLPATHLEN], watc
             }
             if (S_ISDIR(pathStats.st_mode))
             {
-                strcpy(subdirarr[subdirIndex].fullpath, fullpath);
+                if (strlen(subdir->d_name) >= FILENAMELEN - 1)
+                {
+                    printf("Directory %s has name length of %d; max allowed is %d\n", subdir->d_name, (int) strlen(subdir->d_name), FILENAMELEN - 2);
+                    return -1;
+                }
+                strcpy(subdirarr[subdirIndex].filename, subdir->d_name);
+                strcat(subdirarr[subdirIndex].filename, "/");
                 subdirarr[subdirIndex].filenum = parse_filename(subdir->d_name);
                 subdirIndex++;
             }
             else if (S_ISREG(pathStats.st_mode))
             {
-                strcpy(filearr[fileIndex].fullpath, fullpath);
+                if (strlen(subdir->d_name) >= FILENAMELEN)
+                {
+                    printf("File %s has name length of %d; max allowed is %d\n", subdir->d_name, (int) strlen(subdir->d_name), FILENAMELEN - 1);
+                    return -1;
+                }
+                strcpy(filearr[fileIndex].filename, subdir->d_name);
                 filearr[fileIndex].filenum = parse_filename(subdir->d_name);
                 fileIndex++;
             }
@@ -352,7 +373,7 @@ int processrootdir(int* socket_descriptor, char subdirnames[][FULLPATHLEN], watc
     }
     if (fileIndex != numfiles || subdirIndex != numsubdirs)
     {
-        printf("Error: files added or removed while processing existing directories\n");
+        printf("Error: inconsistent file count in root directory (possibly because files were added while counting)\n");
         return -1;
     }
     
@@ -360,26 +381,27 @@ int processrootdir(int* socket_descriptor, char subdirnames[][FULLPATHLEN], watc
     qsort(filearr, numfiles, sizeof(file_entry_t), file_entry_comparator);
     qsort(subdirarr, numsubdirs, sizeof(file_entry_t), file_entry_comparator);
     
-    // Process files
-    int i;
-    for (i = 0; i < numfiles; i++)
+    for (fileIndex = 0; fileIndex < numfiles; fileIndex++)
     {
-        send_until_success(socket_descriptor, filearr[i].fullpath, 1);
+        strcpy(fullpath, rootpath);
+        strcat(fullpath, filearr[fileIndex].filename);
+        send_until_success(socket_descriptor, fullpath, 1);
     }
     
     DIR* subdirtoprocess;
     int result;
     // Process directories, adding watches
-    for (i = 0; i < numsubdirs; i++)
+    for (subdirIndex = 0; subdirIndex < numsubdirs; subdirIndex++)
     {
-        char* fullname = subdirarr[i].fullpath;
-        subdirtoprocess = opendir(fullname);
+        strcpy(fullpath, rootpath);
+        strcat(fullpath, subdirarr[subdirIndex].filename);
+        subdirtoprocess = opendir(fullpath);
         // Add watch, keep track of name
-        strcpy(subdirnames[i], fullname);
-        subdirinfo[i].path = subdirnames[i];
-        subdirinfo[i].fd = inotify_add_watch(inotify_fd, fullname, IN_CLOSE_WRITE);
+        strcpy(subdirnames[subdirIndex], subdirarr[subdirIndex].filename);
+        subdirinfo[subdirIndex].path = subdirnames[subdirIndex];
+        subdirinfo[subdirIndex].fd = inotify_add_watch(inotify_fd, fullpath, IN_CLOSE_WRITE);
         // Process subdirectories
-        result = processsubdir(socket_descriptor, subdirtoprocess, fullname);
+        result = processsubdir(socket_descriptor, subdirtoprocess, fullpath);
         closedir(subdirtoprocess);
         if (result < 0)
         {
@@ -394,20 +416,23 @@ int processsubdir(int* socket_descriptor, DIR* processingdir, char* dirpath)
 {
     struct dirent* subdir;
     struct stat pathStats;
+    
+    off_t start = telldir(processingdir);
+    int numfiles = 0;
 
+    int pathlen;
+    char fullpath[FULLPATHLEN];
     while ((subdir = readdir(processingdir)) != NULL)
     {
         if (strcmp(subdir->d_name, ".") != 0 && strcmp(subdir->d_name, "..") != 0)
         {
-            int pathlen = strlen(dirpath) + strlen(subdir->d_name) + 2;
+            pathlen = strlen(dirpath) + strlen(subdir->d_name) + 1;
             if (pathlen > FULLPATHLEN)
             {
-                printf("Filepath length of %d found; max allowed is %d\n", pathlen, FULLPATHLEN);
+                printf("Filepath of length %d found; max allowed is %d\n", pathlen, FULLPATHLEN);
                 return -1;
             }
-            char fullpath[FULLPATHLEN];
             strcpy(fullpath, dirpath);
-            strcat(fullpath, "/");
             strcat(fullpath, subdir->d_name);
             if (stat(fullpath, &pathStats) != 0)
             {
@@ -416,13 +441,51 @@ int processsubdir(int* socket_descriptor, DIR* processingdir, char* dirpath)
             }
             else if (S_ISREG(pathStats.st_mode))
             {
-                if (send_until_success(socket_descriptor, fullpath, 0) == 1)
-                {
-                    printf("Could not read %s\n", fullpath);
-                }
+                numfiles++;
             }
         }
     }
+    file_entry_t subdirfiles[numfiles];
+    seekdir(processingdir, start);
+    int fileIndex = 0;
+    while ((subdir = readdir(processingdir)) != NULL)
+    {
+        if (strcmp(subdir->d_name, ".") != 0 && strcmp(subdir->d_name, "..") != 0)
+        {
+            // We just checked the filepath lengths in the previous loop, we won't do it gain
+            strcpy(fullpath, dirpath);
+            strcat(fullpath, subdir->d_name);
+            if (stat(fullpath, &pathStats) != 0)
+            {
+                printf("Could not read file %s\n", fullpath);
+                continue;
+            }
+            else if (S_ISREG(pathStats.st_mode))
+            {
+                strcpy(subdirfiles[fileIndex].filename, subdir->d_name);
+                subdirfiles[fileIndex].filenum = parse_filename(subdir->d_name);
+                fileIndex++;
+            }
+        }
+    }
+    if (fileIndex != numfiles)
+    {
+        printf("Error: inconsistent file count in root directory (possibly because files were added while counting)\n");
+        return -1;
+    }
+    
+    qsort(subdirfiles, numfiles, sizeof(file_entry_t), file_entry_comparator);
+    
+    for (fileIndex = 0; fileIndex < numfiles; fileIndex++)
+    {
+        strcpy(fullpath, dirpath);
+        strcat(fullpath, subdirfiles[fileIndex].filename);
+        if (send_until_success(socket_descriptor, fullpath, 0) < 0)
+        {
+            printf("Could not read %s (file not sent)\n", fullpath);
+        }
+    }
+    
     return 0;
 }
 
@@ -508,7 +571,7 @@ int main(int argc, char* argv[])
     
     // Create arrays that store info for watching subdirs
     watched_entry_t subdirstowatch[numsubdirs];
-    char names[numsubdirs][FULLPATHLEN];
+    char names[numsubdirs][FILENAMELEN]; // To save memory, only stores the name of the directory, not the path to it
     
     // This watch will notice any new files or subdirectories in the directory we are watching
     int rootdirfd;
@@ -520,13 +583,15 @@ int main(int argc, char* argv[])
     closedir(rootdir);
     
     char buffer[EVENT_BUF_LEN];
-    char ndirname[FULLPATHLEN];
+    char ndirname[FILENAMELEN];
 
     struct timeval timeout;
     int rlen;
 
     child.fd = -1;
     int i;
+    
+    char fullname[FULLPATHLEN];
 
     while(1)
     {
@@ -543,9 +608,11 @@ int main(int argc, char* argv[])
         }
         rlen = read(fd, buffer, EVENT_BUF_LEN);
         i = 0;
-        if (rlen == -1) {
+        if (rlen == -1)
+        {
             printf("Error (possibly caused by filepath that is too long)\n");
         }
+        
         while (i < rlen)
         {
             result = 0;
@@ -556,10 +623,11 @@ int main(int argc, char* argv[])
                 if ((IN_CREATE & ev->mask) && (IN_ISDIR & ev->mask))
                 {
                     /* Check for new files within the directory */
-                    strncpy(ndirname, argv[1], sizeof(ndirname)-1);
-                    strncat(ndirname, "/", sizeof(ndirname)-1);
-                    strncat(ndirname, ev->name, sizeof(ndirname)-1);
-                    watched_entry_t et = {.fd = inotify_add_watch(fd, ndirname, IN_CLOSE_WRITE),
+                    strncpy(ndirname, ev->name, sizeof(ndirname)-1);
+                    strncat(ndirname, "/", sizeof(ndirname) - 1);
+                    strcpy(fullname, rootpath);
+                    strcat(fullname, ndirname);
+                    watched_entry_t et = {.fd = inotify_add_watch(fd, fullname, IN_CLOSE_WRITE),
                                           .path = ndirname};
                     if (child.fd != -1)
                     {
@@ -571,25 +639,28 @@ int main(int argc, char* argv[])
                     }
                     child = et;
                     
-                    //Ok great, but we may have missed some files, so let's check for them:
+                    // Ok great, but we may have missed some files, so let's check for them:
                     DIR *basedir;
                     struct dirent *dir;
-                    basedir = opendir(ndirname);
+                    basedir = opendir(fullname);
                     if (!basedir)
                     {
                         perror("basedir");
+                        printf("Tried to open %s\n", fullname);
                         safe_exit(1);
                     }
                     while ((dir = readdir(basedir)) != NULL)
                     {
                         if (dir->d_name[0] == '.')
                             continue;
-                        char fullname[FULLPATHLEN];
                         printf("Checking out appeared file\n");
-                        strcpy(fullname, ndirname);
-                        strcat(fullname,"/");
+                        strcpy(fullname, rootpath);
+                        strcat(fullname, ndirname);
                         strcat(fullname, dir->d_name);
-                        result = send_until_success(&socket_des, fullname, 0);
+                        if (send_until_success(&socket_des, fullname, 0) == 1)
+                        {
+                             printf("Could not read %s (file not sent)\n", fullname);
+                        }
                     }
                     closedir(basedir);
                     
@@ -603,7 +674,6 @@ int main(int argc, char* argv[])
                         }
                         watchinginitdirs = 0;
                     }
-                    
                 }
                 /* Check for a new file */
                 else if (((IN_CLOSE_WRITE) & ev->mask) && !(IN_ISDIR & ev->mask))
@@ -651,19 +721,19 @@ int main(int argc, char* argv[])
                         }
                         else
                         {
-                            parentdir = argv[1];
+                            parentdir = "";
                             inRootDir = 1;
                         }
-                        char fullname [256];
-                        strcpy(fullname, parentdir);
-                        strcat(fullname,"/");
+                        char fullname[FULLPATHLEN];
+                        strcpy(fullname, rootpath);
+                        strcat(fullname, parentdir);
                         strcat(fullname, ev->name);
                         result = send_until_success(&socket_des, fullname, inRootDir);
                     }
                 }
                 if (result == 1)
                 {
-                    printf("Could not read %s (file not sent)\n", ev->name);
+                    printf("Could not read %s (file already sent or deleted concurrently)\n", ev->name);
                 }
             }
             i += EVENT_SIZE + ev->len;
