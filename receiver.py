@@ -14,6 +14,14 @@ from parser import sync_output, parse_sync_output
 from sys import argv
 from utils import *
 
+backupdb = True # If we can back up to pymongo
+
+try:
+    import pymongo
+except ImportError:
+    print 'Library \"pymongo\" is not installed. Backup to Mongo Database is disabled.'
+    backupdb = False
+
 numouts = 0
 
 ADDRESSP = 1883
@@ -22,17 +30,29 @@ NUM_SECONDS_PER_FILE = 10
 
 parsed = [] # Stores parsed sync_output structs
 
+mongoids = [] # Stores ids of mongo documents
+
 csv_mode = False
 
 # Check command line arguments
-if len(argv) not in (3, 4) or (len(argv) == 4 and argv[1] == '-c') or (len(argv) == 3 and argv[1] != '-c'):
+if len(argv) not in (3, 4, 5) or (len(argv) == 5 and argv[1] == '-c') or (len(argv) == 3 and argv[1] != '-c'):
     print 'Usage: ./receiver.py <archiver url> <subscription key> <num clock seconds per publish>'
-    print 'OR ./receiver.py -c <num data seconds per file> to write to CSV file instead (included for testing purposes only)'
+    print '       ./receiver.py -c <num data seconds per file> to write to CSV file instead'
+    print '       Add a \"-n\" at the end to disable backup to Mongo Database'
     exit()
 elif argv[1] == '-c':
     csv_mode = True
     print 'In CSV mode'
-    print 'Normal usage: ./receiver.py <archiver url> <subscription key> [<num seconds per publish>]'
+    
+if argv[-1] == '-n':
+    if backupdb:
+        print 'Backup to Mongo Database is disabled.'
+        backupdb = False
+    
+if backupdb:
+    mclient = pymongo.MongoClient()
+    db = mclient.upmu_database
+    received_files = db.received_files
 
 if csv_mode:
     NUM_SECONDS_PER_FILE = int(argv[2])
@@ -55,7 +75,7 @@ else:
     satellites = [Ssstream('grizzlypeak', 'Grizzly Peak uPMU', 'uPMU deployment', 'Num Satellites', '6212599c-ea93-11e3-a919-0026b6df9cf2', 'ns', 'no.', 'UTC', [], argv[1], argv[2]), threading.Lock()]
     streams = (L1Mag, L1Ang, C1Mag, C1Ang, satellites)
 
-# Lock on data (to avoid concurrent writing to "parsed")
+# Lock on data (to avoid concurrent writing to "parsed" and "mongoids")
 datalock = threading.Lock()
 
 class ConnectionTerminatedException(RuntimeError):
@@ -85,6 +105,14 @@ processed, they are converted to a CSV file"""
     datalock.acquire()
     try:
         parsed.extend(parse(data))
+        format_str = ''.join('i' for _ in xrange(len(data) / 4))
+        if backupdb:
+            received_file = {'name': datfilepath,
+                             'data': struct.unpack('<{0}'.format(format_str), data),
+                             'published': False,
+                             'time_received': datetime.datetime.utcnow()}
+            mongoid = received_files.insert(received_file)
+            mongoids.append(mongoid)
     finally:
         datalock.release()
     if csv_mode and len(parsed) >= NUM_SECONDS_PER_FILE:
@@ -92,13 +120,15 @@ processed, they are converted to a CSV file"""
         publishThread.start()
         
 def publish():
-    global parsed
+    global parsed, mongoids
     success = True
     with datalock:
         if not parsed:
             return True
         parsedcopy = parsed
         parsed = []
+        mongoidscopy = mongoids
+        mongoids = []
     try:
         print 'Publishing...'
         parsedcopy.sort(key=lambda x: x.sync_data.times)
@@ -123,8 +153,6 @@ def publish():
                     success = False
                     print 'Could not publish stream'
                 streamIndex += 1
-        if success:
-            print 'Successfully published to {0}'.format(argv[1])
     except KeyboardInterrupt:
         success = False
     except BaseException as be:
@@ -135,19 +163,31 @@ def publish():
         traceback.print_exc()
     finally:
         if success:
+            print 'Successfully published to {0}'.format(argv[1])
+            if backupdb:
+                try:
+                    for mongoid in mongoidscopy:
+                        received_files.update({'_id': mongoid}, {'$set': {'published': True}})
+                except pymongo.errors.OperationFailure:
+                    print 'WARNING: could not update Mongo Database with recent publish'
+                    print 'Relevant IDs are:'
+                    for mongoid in mongoidscopy:
+                        print mongoid
             return True
-        else:
+        elif not backupdb:
             write_backup(parsedcopy) # on failure, write data to file if it could not be published
             return False
 
 def write_csv():
-    global parsed
+    global parsed, mongoids
     success = True
     with datalock:
         if not parsed:
             return
         parsedcopy = parsed
         parsed = []
+        mongoidscopy = mongoids
+        mongoids = []
     try:
         parsedcopy.sort(key=lambda x: x.sync_data.times)
         check_duplicates(parsedcopy)
@@ -171,8 +211,17 @@ def write_csv():
         traceback.print_exc()
     finally:
         if success:
+            if backupdb:
+                try:
+                    for mongoid in mongoidscopy:
+                        received_files.update({'_id': mongoid}, {'$set': {'published': True}})
+                except pymongo.errors.OperationFailure:
+                    print 'WARNING: could not update Mongo Database with recent write'
+                    print 'Relevant IDs are:'
+                    for mongoid in mongoidscopy:
+                        print mongoid
             return True
-        else:
+        elif not backupdb:
             write_backup(parsedcopy)
             return False
     
@@ -247,9 +296,9 @@ try:
             length_string = receive_all_data(connect_socket, 8)
             lengths, lengthd = struct.unpack('<ii', length_string)
             assert lengths > 4
-            filepath = receive_all_data(connect_socket, lengths)
-            print 'Received {0}'.format(filepath)
-            filepath = filepath[:-4] + '.csv'
+            datfilepath = receive_all_data(connect_socket, lengths)
+            print 'Received {0}'.format(datfilepath)
+            filepath = datfilepath[:-4] + '.csv'
 
             receive_all_data(connect_socket, 4 - (lengths % 4)) # get rid of padding bytes
             data = receive_all_data(connect_socket, lengthd)
@@ -257,7 +306,8 @@ try:
             # Process the data
             try:
                 process(data)
-            except ParseException:
+            except BaseException as err: # If there's an exception of any kind, set sendid
+                print err
                 sendid = '\x00\x00\x00\x00'
             
             # Send confirmation of receipt
@@ -268,7 +318,10 @@ try:
                     raise ConnectionTerminatedException('Could not send confirmation')
                 bytesSent += sentNow
         except (ConnectionTerminatedException, socket.error):
-            connect_socket.shutdown(socket.SHUT_RDWR)
+            try:
+                connect_socket.shutdown(socket.SHUT_RDWR)
+            except socket.error: # it may have been already shut down
+                pass
             connect_socket.close()
             connected = False
             print 'Connection was terminated'
