@@ -34,6 +34,16 @@ typedef struct
 
 watched_entry_t child;
 
+// Three pointers that will point to malloc'ed arrays, and ints that indicate if they need to be freed
+file_entry_t* filearr;
+int filearractive = 0;
+
+file_entry_t* subdirarr;
+int subdirarractive = 0;
+
+file_entry_t* subdirfiles;
+int subdirfilesactive = 0;
+
 fd_set set;
 
 // information about the root directory
@@ -76,6 +86,18 @@ void safe_exit(int arg)
     if (connected)
     {
         close_connection(socket_des);
+    }
+    if (filearractive)
+    {
+        free(filearr);
+    }
+    if (subdirarractive)
+    {
+        free(subdirarr);
+    }
+    if(subdirfilesactive)
+    {
+        free(subdirfiles);
     }
     exit(arg);
 }
@@ -320,9 +342,11 @@ int processrootdir(int* socket_descriptor, char subdirnames[][FILENAMELEN], watc
 {
     struct dirent* subdir;
     struct stat pathStats;
-    file_entry_t filearr[numfiles];
+    filearr = malloc(numfiles * sizeof(file_entry_t));
+    filearractive = 1;
     unsigned int fileIndex = 0;
-    file_entry_t subdirarr[numsubdirs];
+    subdirarr = malloc(numsubdirs * sizeof(file_entry_t));
+    subdirarractive = 1;
     unsigned int subdirIndex = 0;
     // Add watch for root directory
     *rootdir_fd = inotify_add_watch(inotify_fd, rootpath, IN_CREATE | IN_CLOSE_WRITE);
@@ -388,6 +412,9 @@ int processrootdir(int* socket_descriptor, char subdirnames[][FILENAMELEN], watc
         send_until_success(socket_descriptor, fullpath, 1);
     }
     
+    filearractive = 0;
+    free(filearr);
+    
     DIR* subdirtoprocess;
     int result;
     // Process directories, adding watches
@@ -408,6 +435,10 @@ int processrootdir(int* socket_descriptor, char subdirnames[][FILENAMELEN], watc
             return -1;
         }
     }
+    
+    subdirarractive = 0;
+    free(subdirarr);
+    
     printf("Finished processing existing files.\n");
     return 0;
 }
@@ -445,7 +476,8 @@ int processsubdir(int* socket_descriptor, DIR* processingdir, char* dirpath)
             }
         }
     }
-    file_entry_t subdirfiles[numfiles];
+    subdirfiles = malloc(numfiles * sizeof(file_entry_t));
+    subdirfilesactive = 1;
     seekdir(processingdir, start);
     int fileIndex = 0;
     while ((subdir = readdir(processingdir)) != NULL)
@@ -485,6 +517,8 @@ int processsubdir(int* socket_descriptor, DIR* processingdir, char* dirpath)
             printf("Could not read %s (file not sent)\n", fullpath);
         }
     }
+    subdirfilesactive = 0;
+    free(subdirfiles);
     
     return 0;
 }
