@@ -1,5 +1,6 @@
 #!/usr/bin/python
 
+import bson
 import calendar
 import csv
 import datetime
@@ -105,10 +106,9 @@ processed, they are converted to a CSV file"""
     datalock.acquire()
     try:
         parsed.extend(parse(data))
-        format_str = ''.join('i' for _ in xrange(len(data) / 4))
         if backupdb:
             received_file = {'name': datfilepath,
-                             'data': struct.unpack('<{0}'.format(format_str), data),
+                             'data': bson.binary.Binary(data, bson.binary.BINARY_SUBTYPE),
                              'published': False,
                              'time_received': datetime.datetime.utcnow()}
             mongoid = received_files.insert(received_file)
