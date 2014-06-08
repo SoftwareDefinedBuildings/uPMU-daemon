@@ -67,6 +67,7 @@ int connected = 0;
 // pointer to the server address
 struct sockaddr* server_addr;
 
+// the id of the next message sent to the server
 uint32_t sendid = 1;
 
 /* Close the socket connection. */
@@ -95,13 +96,19 @@ void safe_exit(int arg)
     {
         free(subdirarr);
     }
-    if(subdirfilesactive)
+    if (subdirfilesactive)
     {
         free(subdirfiles);
     }
     exit(arg);
 }
 
+/* Same as send_file(), except that it takes a pointer to the socket_descriptor instead
+ * of the value itself, and that it will repeatedly try to send the file (waiting
+ * TIMEDELAY seconds between attempts) if the file could be read but could not be sent
+ * over TCP. It returns the value of the successful attempt (so it will never return -1,
+ * just 0 or 1).
+ */
 int send_until_success(int* socket_descriptor, const char* filepath, int inRootDir)
 {
     int result;
@@ -120,6 +127,17 @@ int send_until_success(int* socket_descriptor, const char* filepath, int inRootD
     return result;
 }
 
+/* Sends the contents of the file at FILEPATH over TCP using SOCKET_DESCRIPTOR, if it
+ * is a .dat file.
+ * The total data sent is: 1. an id number, 2. the length of the filepath, 3.
+ * the filepath, 4. the length of the contents of the file, and 5. the contents
+ * of the file.
+ * The filepath sent includes the filename itself, and contains the parent directory
+ * if INROOTDIR is 1.
+ * Returns 0 if the transmission was successful or if the file did not have to be sent.
+ * Returns 1 if there was an error reading the file.
+ * Returns -1 if the file was read properly but could not be sent.
+ */
 int send_file(int socket_descriptor, const char* filepath, int inRootDir)
 {
     printf("Sending file %s\n", filepath);
@@ -177,11 +195,11 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
     
     // Read data into array
     int32_t dataread = fread(datastart, 1, length, input);
+    fclose(input);
     if (dataread != length) {
         printf("Error: could not finish reading file (read %d out of %d bytes)\n", dataread, length);
         return 1;
     }
-    fclose(input);
     
     // Send message over TCP
     int dataleft = 12 + size_word + length;
@@ -239,6 +257,7 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
     return 0;
 }
 
+/* Used to compare two file entries so they can be sorted. */
 int file_entry_comparator(const void* f1, const void* f2)
 {
     const file_entry_t* fe1 = (const file_entry_t*) f1;
@@ -257,6 +276,7 @@ int file_entry_comparator(const void* f1, const void* f2)
     }
 }
 
+/* Finds the number in the filename to use when sorting. */
 long parse_filename(const char* filename)
 {
     const char* currchar = filename;
@@ -443,6 +463,7 @@ int processrootdir(int* socket_descriptor, char subdirnames[][FILENAMELEN], watc
     return 0;
 }
 
+/* Sends the files in a subdirectory (does not add watches). */
 int processsubdir(int* socket_descriptor, DIR* processingdir, char* dirpath)
 {
     struct dirent* subdir;
@@ -523,6 +544,9 @@ int processsubdir(int* socket_descriptor, DIR* processingdir, char* dirpath)
     return 0;
 }
 
+/* Attempts to connect to the server_addr and returns the socket descriptor
+ * if successful. If not successful, return -1.
+ */
 int make_socket()
 {
     int socket_descriptor = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -700,6 +724,8 @@ int main(int argc, char* argv[])
                     
                     if (watchinginitdirs)
                     {
+                        // if we're watching the initial directories, then remove all
+                        // those watches; the newly created directory is the active one
                         i = 0;
                         while (i < numsubdirs)
                         {
@@ -712,6 +738,7 @@ int main(int argc, char* argv[])
                 /* Check for a new file */
                 else if (((IN_CLOSE_WRITE) & ev->mask) && !(IN_ISDIR & ev->mask))
                 {
+                    // Check if the file is in one of the subdirectories
                     if (watchinginitdirs && child.fd != ev->wd && rootdirfd != ev->wd)
                     {
                         int index = 0;
@@ -720,6 +747,8 @@ int main(int argc, char* argv[])
                         {
                             if (subdirstowatch[index].fd == ev->wd)
                             {
+                                // if it is in a subdirectory, store the info in "child" and the index
+                                // of the directory in "index"
                                 child.fd = ev->wd;
                                 strcpy(ndirname, subdirstowatch[index].path);
                                 child.path = ndirname;
@@ -733,6 +762,7 @@ int main(int argc, char* argv[])
                         }
                         else
                         {
+                            // it was in a subdirectory, so remove all the relevant watches
                             while (index2 < numsubdirs)
                             {
                                 if (index != index2)

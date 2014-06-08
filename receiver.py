@@ -50,6 +50,7 @@ if argv[-1] == '-n':
         print 'Backup to Mongo Database is disabled.'
         backupdb = False
     
+# Set up Mongo DB if it hasn't been disabled
 if backupdb:
     mclient = pymongo.MongoClient()
     db = mclient.upmu_database
@@ -87,9 +88,9 @@ class ParseException(RuntimeError):
 
 def parse(string):
     """ Parses data (in the form of STRING) into a series of sync_output
-objects. Returns a list of sync_output objects. If STRING is not of a
-suitable length (i.e., if the number of bytes is not some multiple of
-the length of a sync_output struct) a ParseException is raised. """
+    objects. Returns a list of sync_output objects. If STRING is not of a
+    suitable length (i.e., if the number of bytes is not some multiple of
+    the length of a sync_output struct) a ParseException is raised. """
     if len(string) % sync_output.LENGTH != 0:
         raise ParseException('Input to \"parse\" does not contain whole number of \"sync_output\"s ({0} extra bytes)'.format(len(string) % sync_output.LENGTH))
     lst = []
@@ -101,8 +102,8 @@ the length of a sync_output struct) a ParseException is raised. """
 
 def process(data):
     """ Converts DATA (in the form of a string) to sync_output objects and
-adds them to the list of processed objects. When enough objects have been
-processed, they are converted to a CSV file"""
+    adds them to the list of processed objects. When enough objects have been
+    processed, they are converted to a CSV file"""
     datalock.acquire()
     try:
         parsed.extend(parse(data))
@@ -120,6 +121,10 @@ processed, they are converted to a CSV file"""
         publishThread.start()
         
 def publish():
+    """ Attempts to publish data in PARSED to sMAP. Upon success, updates mongo documents with ids in
+    MONGOIDS to indicate that their data have been published and returns True. Upon failure,
+    returns False and writes a backup of the relevant files if backup using Mongo DB has been
+    disabled. """
     global parsed, mongoids
     success = True
     with datalock:
@@ -179,6 +184,10 @@ def publish():
             return False
 
 def write_csv():
+    """ Attempts to write data in PARSED to CSV file. Upon success, updates mongo documents with ids in
+    MONGOIDS to indicate that their data have been published and returns True. Upon failure,
+    returns False and writes a backup of the relevant files if backup using Mongo DB has been
+    disabled. """
     global parsed, mongoids
     success = True
     with datalock:
@@ -226,6 +235,8 @@ def write_csv():
             return False
     
 def write_backup(structs):
+    """ Writes a backup of the structs in STRUCTS, a list of sync_output structs, to a file
+    in the directory "backup". """
     print 'Writing backup...' # on failure, write data to file if it could not be published
     if not os.path.exists('backup/'):
         os.mkdir('backup/')
@@ -306,17 +317,20 @@ try:
             # Process the data
             try:
                 process(data)
+            except KeyboardInterrupt:
+                sendid = '\x00\x00\x00\x00'
+                raise
             except BaseException as err: # If there's an exception of any kind, set sendid
                 print err
                 sendid = '\x00\x00\x00\x00'
-            
-            # Send confirmation of receipt
-            bytesSent = 0
-            while bytesSent < 4:
-                sentNow = connect_socket.send(sendid[bytesSent:])
-                if sentNow <= 0:
-                    raise ConnectionTerminatedException('Could not send confirmation')
-                bytesSent += sentNow
+            finally:
+                # Send confirmation of receipt
+                bytesSent = 0
+                while bytesSent < 4:
+                    sentNow = connect_socket.send(sendid[bytesSent:])
+                    if sentNow <= 0:
+                        raise ConnectionTerminatedException('Could not send confirmation')
+                    bytesSent += sentNow
         except (ConnectionTerminatedException, socket.error):
             try:
                 connect_socket.shutdown(socket.SHUT_RDWR)
@@ -338,8 +352,7 @@ finally:
     try:
         close_connection() # I don't think there will be any problems here...
     except BaseException as be:
-        print 'Exception:'
-        traceback.print_exc()
+        print 'Could not close connection: {0}'.format(be)
     finally: #... but the final publish needs to be done no matter what
         restart = False
         if t is not None:
