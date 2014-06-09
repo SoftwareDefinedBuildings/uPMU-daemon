@@ -31,7 +31,8 @@ mongoids = [] # Stores ids of mongo documents
 # Check command line arguments
 if len(argv) != 2:
     print 'Usage: ./receiver.py <num data seconds per file>'
-    exit()
+    print ' but for your convenience I am defaulting to 900'
+    argv = argv[0] + ["900"]
     
 # Mongo DB collection
 received_files = None
