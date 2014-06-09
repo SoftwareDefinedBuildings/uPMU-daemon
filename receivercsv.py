@@ -72,23 +72,42 @@ def process(data, datfilepath, serial):
     """ Converts DATA (in the form of a string) to sync_output objects and
     adds them to the list of processed objects. When enough objects have been
     processed, they are converted to a CSV file"""
+    parseddata = parse(data)
     received_file = {'name': datfilepath,
                      'data': Binary(data),
                      'published': False,
                      'time_received': datetime.datetime.utcnow(),
                      'serial_number': serial}
     mongoiddeferred = received_files.insert(received_file)
-    mongoiddeferred.addCallback(finishprocessing, data)
-    mongoiddeferred.addErrback(databaseerror)
+    mongoiddeferred.addCallback(finishprocessing, parseddata)
+    mongoiddeferred.addErrback(databaseerror, parseddata)
         
-def finishprocessing(mongoid, data):
-    parsed.extend(parse(data))
+def finishprocessing(mongoid, parseddata):
+    parsed.extend(parseddata)
     mongoids.append(mongoid)
     if len(parsed) >= NUM_SECONDS_PER_FILE:
         write_csv()
         
-def databaseerror(err):
+def databaseerror(err, parseddata):
     print 'WARNING:', err
+    write_backup(parseddata)
+    
+def write_backup(structs):
+    """ Writes a backup of the structs in STRUCTS, a list of sync_output structs, to a file
+    in the directory "backup". """
+    print 'Writing backup...' # on failure, write data to file if it could not be published
+    if not os.path.exists('backup/'):
+        os.mkdir('backup/')
+    numfiles = len(os.listdir('backup/'))
+    numouts = numfiles
+    while numouts > 0 and not os.path.exists('backup/backup{0}.dat'.format(numouts)):
+        numouts -= 1
+    numouts += 1
+    backup = open('backup/backup{0}.dat'.format(numouts), 'wb')
+    for s in structs:
+        backup.write(s.data)
+    backup.close()
+    print 'Done writing backup.'
 
 def write_csv():
     """ Attempts to write data in PARSED to CSV file. Upon success, updates mongo documents with ids in
