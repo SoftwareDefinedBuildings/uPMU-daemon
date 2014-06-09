@@ -253,7 +253,7 @@ def setup(mconn):
      try:
          with open('serial_aliases.ini', 'r') as f:
              for line in f:
-                 pair = line.split('=')
+                 pair = line.rstrip().split('=')
                  aliases[pair[0]] = pair[1]
      except:
          print 'WARNING: Could not read serial_aliases.ini'
