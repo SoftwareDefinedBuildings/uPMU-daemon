@@ -101,7 +101,7 @@ def parse(string):
     return lst
     
 
-def process(data, datfilepath):
+def process(data, datfilepath, serial):
     """ Converts DATA (in the form of a string) to sync_output objects and
     adds them to the list of processed objects. When enough objects have been
     processed, they are converted to a CSV file"""
@@ -109,9 +109,10 @@ def process(data, datfilepath):
     parsed.extend(parse(data))
     if backupdb:
         received_file = {'name': datfilepath,
-                         'data': Binary(data, bson.binary.BINARY_SUBTYPE),
+                         'data': Binary(data),
                          'published': False,
-                         'time_received': datetime.datetime.utcnow()}
+                         'time_received': datetime.datetime.utcnow(),
+                         'serial_number': serial}
         mongoiddeferred = received_files.insert(received_file)
         mongoiddeferred.addCallback(finishprocessing)
     elif csv_mode and len(parsed) >= NUM_SECONDS_PER_FILE:
@@ -281,16 +282,23 @@ class TCPResolver(Protocol):
             else:
                 return
         if self.lengths is None:
-            if len(self.have) >= 8:
-                self.lengths, self.lengthd = struct.unpack('<ii', self.have[:8])
-                self.paddingbytes = 4 - (self.lengths % 4)
-                self.have = self.have[8:]
+            if len(self.have) >= 12:
+                self.lengths, self.lengthserial, self.lengthd = struct.unpack('<III', self.have[:12])
+                self.padding1 = ((self.lengths + 3) & 0xFFFFFFFC)
+                self.padding2 = ((self.lengthserial + 3) & 0xFFFFFFFC)
+                self.have = self.have[12:]
             else:
                 return
         if self.filepath is None:
             if len(self.have) >= self.lengths:
                 self.filepath = self.have[:self.lengths]
-                self.have = self.have[self.lengths + self.paddingbytes:]
+                self.have = self.have[self.padding1:]
+            else:
+                return
+        if self.serialNum is None:
+            if len(self.have) >= self.lengthserial:
+                self.serialNum = self.have[:self.lengthserial]
+                self.have = self.have[self.padding2:]
             else:
                 return
         if self.data is None:
@@ -305,7 +313,7 @@ class TCPResolver(Protocol):
         # if we've reached this point, we have all the data
         print 'Received', self.filepath
         try:
-            process(self.data, self.filepath)
+            process(self.data, self.filepath, self.serialNum)
         except KeyboardInterrupt:
             self.sendid = '\x00\x00\x00\x00'
             raise
@@ -317,21 +325,25 @@ class TCPResolver(Protocol):
             self.transport.write(self.sendid)
             self.sendid = None
             self.lengths = None
+            self.lengthserial = None
             self.lengthd = None
             self.filepath = None
+            self.serialNum = None
             self.data = None
             
     def connectionLost(self, reason):
-        print 'Connection lost: ', self.transport.getPeer()
+        print 'Connection lost:', self.transport.getPeer()
         
     def connectionMade(self):
         self.have = ''
         self.sendid = None
         self.lengths = None
+        self.lengthserial = None
         self.lengthd = None
         self.filepath = None
+        self.serialNum = None
         self.data = None
-        print 'Connected: ', self.transport.getPeer()
+        print 'Connected:', self.transport.getPeer()
 
 class ResolverFactory(Factory):
     def buildProtocol(self, addr):

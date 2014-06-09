@@ -4,7 +4,7 @@
 #define FULLPATHLEN 256 // the maximum length of a full file path
 #define FILENAMELEN 128 // the maximum length of a file or directory name (within the root directory)
 #define TIMEDELAY 10 // the number of seconds to wait between subsequent tries to reconnect
-#define MAXDEPTH 4
+#define MAXDEPTH 4 // the root directory is at depth 0
 
 #include <errno.h>
 #include <signal.h>
@@ -33,7 +33,7 @@ typedef struct
     char filename[FILENAMELEN];
 } file_entry_t;
 
-watched_entry_t children[MAXDEPTH];
+watched_entry_t children[MAXDEPTH + 1];
 
 fd_set set;
 
@@ -48,6 +48,11 @@ int size_watched_arr = 0;
 // the socket descriptor
 int socket_des = -1;
 
+// the serial number of this uPMU
+char* serialNum;
+uint32_t size_serial;
+uint32_t size_serial_word;
+
 // 1 if connected (i.e., socket connection needs to be closed), 0 otherwise
 int connected = 0;
 
@@ -57,6 +62,7 @@ struct sockaddr* server_addr;
 // the id of the next message sent to the server
 uint32_t sendid = 1;
 
+/* Deletes a directory if possible, printing messages as necessary. */
 void remove_dir(const char* dirpath)
 {
     errno = 0;
@@ -75,6 +81,12 @@ void remove_dir(const char* dirpath)
             printf("Directory %s not removed: no permissions OR directory in use\n", dirpath);
         }
     }
+}
+
+/* Finds the smallest int larger than the input that's a multiple of 4. */
+uint32_t roundUp4(uint32_t input)
+{
+    return (input + 3) & 0xFFFFFFFCu;
 }
 
 /* Close the socket connection. */
@@ -136,24 +148,8 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
         printf("Skipping over file that is not \".dat\"\n");
         return 0;
     }
-    
-    // Find file path up to file's parent directory
-    // Works assuming there is a parent directory (/.../file.dat)
-    char filepathAfterParent[FULLPATHLEN];
-    char filepathCopy[FULLPATHLEN];
-    strcpy(filepathCopy, filepath);
-    if (inRootDir)
-    {
-        strcpy(filepathAfterParent, basename(filepathCopy));
-    }
-    else
-    {
-        strcpy(filepathAfterParent, basename(dirname(filepathCopy)));
-        strcat(filepathAfterParent, "/");
-        strcpy(filepathCopy, filepath); // since basename() may have changed it
-        strcat(filepathAfterParent, basename(filepathCopy));
-    }
-    uint32_t size = strlen(filepathAfterParent);
+
+    uint32_t size = strlen(filepath);
     
     // Open file
     FILE *input;
@@ -167,17 +163,19 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
     fseek(input, 0, SEEK_END);
     uint32_t length = ftell(input);
     
-    // Store file number (sendid), length of filename, length of data, and filename in data array
+    // Store file number (sendid), length of serial number, length of filename, length of data, and filename in data array
     // The null terminator may be overwritten; the length of the filename does not
     // include the null terminator.
     // Space is added to the end of filename so it is word-aligned.
-    uint32_t size_word = (size & 0xFFFFFFFC) + 4; // size with extra bytes so it's word-aligned
-    uint8_t data[12 + size_word + length] __attribute__((aligned(4)));
+    uint32_t size_word = roundUp4(size); // size with extra bytes so it's word-aligned
+    uint8_t data[16 + size_word + size_serial_word + length] __attribute__((aligned(4)));
     *((uint32_t*) data) = sendid;
     *((uint32_t*) (data + 4)) = size;
-    *((uint32_t*) (data + 8)) = length;
-    strcpy(data + 12, filepathAfterParent);
-    uint8_t* datastart = data + 12 + size_word;
+    *((uint32_t*) (data + 8)) = size_serial;
+    *((uint32_t*) (data + 12)) = length;
+    strcpy(data + 16, filepath);
+    strcpy(data + 16 + size_word, serialNum);
+    uint8_t* datastart = data + 16 + size_word + size_serial_word;
     rewind(input);
     
     // Read data into array
@@ -189,12 +187,12 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
     }
     
     // Send message over TCP
-    int dataleft = 12 + size_word + length;
+    int dataleft = 16 + size_word + size_serial_word + length;
     int datawritten;
     uint8_t* dest = data;
     while (dataleft > 0)
     {
-        datawritten = write(socket_descriptor, dest, 12 + size_word + length);
+        datawritten = write(socket_descriptor, dest, dataleft);
         if (datawritten < 0)
         {
             printf("Could not send file %s\n", filepath);
@@ -203,8 +201,6 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
         dataleft -= datawritten;
         dest += datawritten;
     }
-    
-    printf("Completely sent\n");
 
     uint32_t response;
     
@@ -445,7 +441,7 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
     }
     free(subdirarr);
     
-    if (depth == 0)
+    if (depth == 1)
     {
         printf("Finished processing existing files.\n");
     }
@@ -459,11 +455,15 @@ void interrupt_handler(int sig)
 
 int main(int argc, char* argv[])
 {
-    if (argc != 3)
+    if (argc != 4)
     {
-        printf("Usage: %s <directorytowatch> <targetserver>\n", argv[0]);
+        printf("Usage: %s <directorytowatch> <targetserver> <uPMU serial number>\n", argv[0]);
         safe_exit(1);
     }
+    
+    serialNum = argv[3];
+    size_serial = strlen(serialNum);
+    size_serial_word = roundUp4(size_serial);
     
     // Set up signal to handle Ctrl-C (close socket connection before terminating)
     struct sigaction action;
@@ -511,8 +511,13 @@ int main(int argc, char* argv[])
     }
     
     // This watch will notice any new files or subdirectories in the directory we are watching
-    inotify_add_watch(fd, argv[1], IN_CREATE | IN_CLOSE_WRITE);
-    if (processdir(argv[1], &socket_des, fd, 0, 1) < 0)
+    children[0].fd = inotify_add_watch(fd, argv[1], IN_CREATE | IN_CLOSE_WRITE);
+    strcpy(children[0].path, argv[1]);
+    if (argv[1][strlen(argv[1]) - 1] != '/')
+    {
+        strcat(children[0].path, "/");
+    }
+    if (processdir(children[0].path, &socket_des, fd, 1, 1) < 0)
     {
         safe_exit(1);
     }
@@ -557,7 +562,7 @@ int main(int argc, char* argv[])
                 {
                     printf("new directory noticed\n");
                     // Find the correct depth, store it in i
-                    for (i = 0; i < MAXDEPTH; i++)
+                    for (i = MAXDEPTH; i >= 0; i--)
                     {
                         if (children[i].fd == ev->wd)
                         {
@@ -565,14 +570,14 @@ int main(int argc, char* argv[])
                         }
                     }
                     i++;
-                    if (i > MAXDEPTH)
+                    if (i == MAXDEPTH)
                     {
-                        i = 0;
+                        printf("WARNING: unexpected new directory past maximum depth (will be ignored)\n");
                     }
                     
-                    // remove watch from depth i and below and delete directories if possible
-                    printf("%d %s\n", i, children[i].path);
-                    for (j = MAXDEPTH - 1; j >= i; j--)
+                    // remove watches from depth i and deeper and delete directories if possible
+                    printf("Found new directory %s at depth %d\n", children[i].path, i);
+                    for (j = MAXDEPTH; j >= i; j--)
                     {
                         if (children[j].fd != -1) // if it has already been deleted, don't do anything
                         {
@@ -588,20 +593,8 @@ int main(int argc, char* argv[])
                         }
                     }
                     
-                    char* parentname;
-                    if (i == 0)
-                    {
-                        parentname = dirname(children[i].path);
-                    }
-                    else
-                    {
-                        parentname = children[i - 1].path;
-                    }
+                    char* parentname = children[i - 1].path;
                     strcpy(fullname, parentname);
-                    if (i == 0)
-                    {
-                        strcat(fullname, "/");
-                    }
                     strcat(fullname, ev->name);
                     strcat(fullname, "/");
                     strcpy(children[i].path, fullname);
@@ -636,16 +629,16 @@ int main(int argc, char* argv[])
                 /* Check for a new file */
                 else if (((IN_CLOSE_WRITE) & ev->mask) && !(IN_ISDIR & ev->mask))
                 {
-                    if (children[MAXDEPTH-1].fd == ev->wd)
+                    if (children[MAXDEPTH].fd == ev->wd)
                     {
                         char fullname[FULLPATHLEN];
-                        strcpy(fullname, children[MAXDEPTH-1].path);
+                        strcpy(fullname, children[MAXDEPTH].path);
                         strcat(fullname, ev->name);
                         result = send_until_success(&socket_des, fullname, 0);
                     }
                     else
                     {
-                        printf("Got unexpected file close FD\n");
+                        printf("Warning: file %s appeared outside hour directory\n", ev->name);
                     }
                 }
                 if (result == 1)
