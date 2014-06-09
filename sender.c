@@ -27,12 +27,6 @@ typedef struct
     char path[FULLPATHLEN];
 } watched_entry_t;
 
-typedef struct
-{
-    long filenum;
-    char filename[FILENAMELEN];
-} file_entry_t;
-
 watched_entry_t children[MAXDEPTH + 1];
 
 fd_set set;
@@ -137,7 +131,7 @@ int make_socket()
  * Returns 1 if there was an error reading the file.
  * Returns -1 if the file was read properly but could not be sent.
  */
-int send_file(int socket_descriptor, const char* filepath, int inRootDir)
+int send_file(int socket_descriptor, const char* filepath)
 {
     printf("Sending file %s\n", filepath);
     
@@ -248,10 +242,10 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
  * over TCP. It returns the value of the successful attempt (so it will never return -1,
  * just 0 or 1).
  */
-int send_until_success(int* socket_descriptor, const char* filepath, int inRootDir)
+int send_until_success(int* socket_descriptor, const char* filepath)
 {
     int result;
-    while ((result = send_file(*socket_descriptor, filepath, inRootDir)) == -1)
+    while ((result = send_file(*socket_descriptor, filepath)) == -1)
     {
         if (connected)
         {
@@ -269,32 +263,7 @@ int send_until_success(int* socket_descriptor, const char* filepath, int inRootD
 /* Used to compare two file entries so they can be sorted. */
 int file_entry_comparator(const void* f1, const void* f2)
 {
-    const file_entry_t* fe1 = (const file_entry_t*) f1;
-    const file_entry_t* fe2 = (const file_entry_t*) f2;
-    return strcmp(fe1->filename, fe2->filename);
-}
-
-/* Finds the number in the filename to use when sorting. */
-long parse_filename(const char* filename)
-{
-    const char* currchar = filename;
-    while (*currchar != '\0' && (*currchar < '0' || *currchar > '9'))
-    {
-        currchar++;
-    }
-    if (*currchar == '\0')
-    {
-        printf("Warning: file %s could not be ordered numerically\n", filename);
-        return -1;
-    }
-    errno = 0;
-    long result = strtol(currchar, NULL, 10);
-    if (errno != 0)
-    {
-        printf("Type long is not large enough to store file number for %s\n", filename);
-        printf("Files may be sent out of order\n");
-    }
-    return result;
+    return strcmp((const char*) f1, (const char*) f2);
 }
 
 /* Processes directory, sending files and adding watches (uses information in global variables) */
@@ -349,9 +318,9 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
     }
     
     seekdir(rootdir, start_position);
-    file_entry_t* filearr = malloc(numfiles * sizeof(file_entry_t));
+    char* filearr = malloc(numfiles * FILENAMELEN);
     unsigned int fileIndex = 0;
-    file_entry_t* subdirarr = malloc(numsubdirs * sizeof(file_entry_t));
+    char* subdirarr = malloc(numsubdirs * FILENAMELEN);
     unsigned int subdirIndex = 0;
     // Add watch for root directory
     // Add files and directories to arrays
@@ -380,9 +349,8 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
                     printf("Directory %s has name length of %d; max allowed is %d\n", subdir->d_name, (int) strlen(subdir->d_name), FILENAMELEN - 2);
                     return -1;
                 }
-                strcpy(subdirarr[subdirIndex].filename, subdir->d_name);
-                strcat(subdirarr[subdirIndex].filename, "/");
-                subdirarr[subdirIndex].filenum = parse_filename(subdir->d_name);
+                strcpy(subdirarr + (subdirIndex * FILENAMELEN), subdir->d_name);
+                strcat(subdirarr + (subdirIndex * FILENAMELEN), "/");
                 subdirIndex++;
             }
             else if (S_ISREG(pathStats.st_mode))
@@ -392,8 +360,7 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
                     printf("File %s has name length of %d; max allowed is %d\n", subdir->d_name, (int) strlen(subdir->d_name), FILENAMELEN - 1);
                     return -1;
                 }
-                strcpy(filearr[fileIndex].filename, subdir->d_name);
-                filearr[fileIndex].filenum = parse_filename(subdir->d_name);
+                strcpy(filearr + (fileIndex * FILENAMELEN), subdir->d_name);
                 fileIndex++;
             }
         }
@@ -406,35 +373,38 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
     
     closedir(rootdir);
     // Sort files and subdirectories in numerical order
-    qsort(filearr, numfiles, sizeof(file_entry_t), file_entry_comparator);
-    qsort(subdirarr, numsubdirs, sizeof(file_entry_t), file_entry_comparator);
+    qsort(filearr, numfiles, FILENAMELEN, file_entry_comparator);
+    qsort(subdirarr, numsubdirs, FILENAMELEN, file_entry_comparator);
     
     for (fileIndex = 0; fileIndex < numfiles; fileIndex++)
     {
         strcpy(fullpath, dirpath);
-        strcat(fullpath, filearr[fileIndex].filename);
-        send_until_success(socket_descriptor, fullpath, 1);
+        strcat(fullpath, filearr + (fileIndex * FILENAMELEN));
+        send_until_success(socket_descriptor, fullpath);
     }
     
     free(filearr);
     
     int result;
+    int addedwatch;
     // Process directories, adding watches
     for (subdirIndex = 0; subdirIndex < numsubdirs; subdirIndex++)
     {
+        addedwatch = 0;
         strcpy(fullpath, dirpath);
-        strcat(fullpath, subdirarr[subdirIndex].filename);
+        strcat(fullpath, subdirarr + (subdirIndex * FILENAMELEN));
+        if (addwatchtosubs && (subdirIndex == (numsubdirs - 1)))
+        {
+            children[depth].fd = inotify_add_watch(inotify_fd, fullpath, IN_CREATE | IN_CLOSE_WRITE);
+            strcpy(children[depth].path, fullpath);
+            addedwatch = 1;
+        }
         result = processdir(fullpath, socket_descriptor, inotify_fd, depth + 1, addwatchtosubs && (subdirIndex == (numsubdirs - 1)));
         if (result < 0)
         {
             return -1;
         }
-        if (addwatchtosubs && (subdirIndex == (numsubdirs - 1)))
-        {
-            children[depth].fd = inotify_add_watch(inotify_fd, fullpath, IN_CREATE | IN_CLOSE_WRITE);
-            strcpy(children[depth].path, fullpath);
-        }
-        else
+        if (!addedwatch)
         {
             remove_dir(fullpath);
         }
@@ -570,7 +540,7 @@ int main(int argc, char* argv[])
                         }
                     }
                     i++;
-                    if (i == MAXDEPTH)
+                    if (i > MAXDEPTH)
                     {
                         printf("WARNING: unexpected new directory past maximum depth (will be ignored)\n");
                     }
@@ -619,7 +589,7 @@ int main(int argc, char* argv[])
                         strcpy(fullname, children[i].path);
                         strcat(fullname, "/");
                         strcat(fullname, dir->d_name);
-                        if (send_until_success(&socket_des, fullname, 0) == 1)
+                        if (send_until_success(&socket_des, fullname) == 1)
                         {
                              printf("Could not read %s (file not sent)\n", fullname);
                         }
@@ -634,7 +604,7 @@ int main(int argc, char* argv[])
                         char fullname[FULLPATHLEN];
                         strcpy(fullname, children[MAXDEPTH].path);
                         strcat(fullname, ev->name);
-                        result = send_until_success(&socket_des, fullname, 0);
+                        result = send_until_success(&socket_des, fullname);
                     }
                     else
                     {
