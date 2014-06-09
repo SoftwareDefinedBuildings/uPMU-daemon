@@ -158,7 +158,9 @@ class TCPResolver(Protocol):
                          'published': False,
                          'time_received': datetime.datetime.utcnow(),
                          'serial_number': self.serialNum}
-        latest_time.insert({'name': self.filepath, 'time_received': datetime.datetime.utcnow(), 'serial_number': self.serialNum})
+        docsDeferred = latest_time.find_one({'serial_number': self.serialNum})
+        docsDeferred.addCallback(update_latest_time, received_file['time_received'], self.serialNum)
+        docsDeferred.addErrback(latest_time_error, self.serialNum)
         mongoiddeferred = received_files.insert(received_file)
         mongoiddeferred.addCallback(self._finishprocessing, parseddata)
         mongoiddeferred.addErrback(databaseerror, self.transport)
@@ -196,7 +198,7 @@ class TCPResolver(Protocol):
             subdirs = filepath.rsplit('/', DIRDEPTH)
             if subdirs[-1].endswith('.dat'):
                 subdirs[-1] = subdirs[-1][:-4]
-            if len(subdirs) <= DIRDEPTH + 1:
+            if len(subdirs) <= DIRDEPTH:
                 print 'WARNING: filepath {0} has insufficient depth'.format(filepath)
             dirtowrite += '/'.join(subdirs[1:-1])
             if not os.path.exists(dirtowrite):
@@ -230,6 +232,17 @@ def databaseerror(err, transport):
     print 'Could not update database:', err
     transport.write('\x00\x00\x00\x00')
 
+def update_latest_time(curr_doc, newtime, serialnumber):
+    print 'Got', curr_doc
+    if curr_doc == {}:
+        d = latest_time.insert({'serial_number': serialnumber, 'time_received': newtime})
+    else:
+        d = latest_time.update({'serial_number': serialnumber}, {'$set': {'time_received': newtime}})
+    d.addErrback(latest_time_error, serialnumber)
+        
+def latest_time_error(err, serialnumber):
+    print 'Cannot update latest_time collection for serial number', serialnumber
+    print 'Details:', err
 
 class ResolverFactory(Factory):
     def buildProtocol(self, addr):
