@@ -22,6 +22,10 @@ from utils import *
 
 ADDRESSP = 1883
 
+aliases = {}
+
+DIRDEPTH = 5
+
 NUM_SECONDS_PER_FILE = 10
 
 parsed = [] # Stores parsed sync_output structs
@@ -29,9 +33,12 @@ parsed = [] # Stores parsed sync_output structs
 mongoids = [] # Stores ids of mongo documents
 
 # Check command line arguments
-if len(argv) != 2:
-    print 'Usage: ./receiver.py <num data seconds per file>'
+if len(argv) not in (2, 3):
+    print 'Usage: ./receiver.py <num data seconds per file> [<depth of input directory>]'
     exit()
+    
+if len(argv) == 3:
+    DIRDEPTH = argv[2]
     
 # Mongo DB collection
 received_files = None
@@ -68,94 +75,13 @@ def parse(string):
         lst.append(obj)
     return lst
     
-
-def process(data, datfilepath, serial):
-    """ Converts DATA (in the form of a string) to sync_output objects and
-    adds them to the list of processed objects. When enough objects have been
-    processed, they are converted to a CSV file"""
-    parseddata = parse(data)
-    received_file = {'name': datfilepath,
-                     'data': Binary(data),
-                     'published': False,
-                     'time_received': datetime.datetime.utcnow(),
-                     'serial_number': serial}
-    latest_time.insert({'name': datfilepath, 'time_received': datetime.datetime.utcnow(), 'serial_number': serial})
-    mongoiddeferred = received_files.insert(received_file)
-    mongoiddeferred.addCallback(finishprocessing, parseddata)
-    mongoiddeferred.addErrback(databaseerror, parseddata)
-        
-def finishprocessing(mongoid, parseddata):
-    parsed.extend(parseddata)
-    mongoids.append(mongoid)
-    if len(parsed) >= NUM_SECONDS_PER_FILE:
-        write_csv()
-        
-def databaseerror(err, parseddata):
-    print 'WARNING:', err
-    write_backup(parseddata)
-    
-def write_backup(structs):
-    """ Writes a backup of the structs in STRUCTS, a list of sync_output structs, to a file
-    in the directory "backup". """
-    print 'Writing backup...' # on failure, write data to file if it could not be published
-    if not os.path.exists('backup/'):
-        os.mkdir('backup/')
-    numfiles = len(os.listdir('backup/'))
-    numouts = numfiles
-    while numouts > 0 and not os.path.exists('backup/backup{0}.dat'.format(numouts)):
-        numouts -= 1
-    numouts += 1
-    backup = open('backup/backup{0}.dat'.format(numouts), 'wb')
-    for s in structs:
-        backup.write(s.data)
-    backup.close()
-    print 'Done writing backup.'
-
-def write_csv():
-    """ Attempts to write data in PARSED to CSV file. Upon success, updates mongo documents with ids in
-    MONGOIDS to indicate that their data have been published and returns True. Upon failure,
-    returns False and writes a backup of the relevant files if backup using Mongo DB has been
-    disabled. """
-    global parsed, mongoids
-    success = True
-    if not parsed:
-        return
-    parsedcopy = parsed
-    parsed = []
-    mongoidscopy = mongoids
-    mongoids = []
-    try:
-        parsedcopy.sort(key=lambda x: x.sync_data.times)
-        check_duplicates(parsedcopy)
-        firstTime = time_to_str(parsedcopy[0].sync_data.times)
-        lastTime = time_to_str(parsedcopy[-1].sync_data.times)
-        if not os.path.exists('output/'):
-            os.mkdir('output/')
-        filename = 'output/out__{0}__{1}.csv'.format(firstTime, lastTime)
-        print 'Writing file {0}'.format(filename)
-        with open(filename, 'wb') as f:
-            writer = csv.writer(f)
-            writer.writerow(firstrow)
-            writer.writerows(lst_to_rows(parsedcopy))
-    except KeyboardInterrupt:
-        success = False
-    except BaseException as be:
-        success = False
-        print 'WARNING: publish could not be completed due to exception'
-        print 'Details: {0}'.format(be)
-        print 'Traceback:'
-        traceback.print_exc()
-    finally:
-        if success:
-            for mongoid in mongoidscopy:
-                d = received_files.update({'_id': mongoid}, {'$set': {'published': True}})
-                d.addErrback(print_mongo_error)
-            return True
-            
-def print_mongo_error(err):
-    print 'WARNING: could not update Mongo Database with recent write'
-
 class TCPResolver(Protocol):
+    def __init__(self):
+        self._parsed = []
+        self._mongoids = []
+        self.firstfilepath = None
+        self.serialNum = None
+        
     def dataReceived(self, data):
         self.have += data
         if self.sendid is None:
@@ -178,9 +104,14 @@ class TCPResolver(Protocol):
                 self.have = self.have[self.padding1:]
             else:
                 return
-        if self.serialNum is None:
+        if not self.gotSerialNum:
             if len(self.have) >= self.lengthserial:
-                self.serialNum = self.have[:self.lengthserial]
+                newSerial = self.have[:self.lengthserial]
+                if self.serialNum is not None and newSerial != self.serialNum:
+                    print 'WARNING: serial number changed from {0} to {1}'.format(self.serialNum, newSerial)
+                    print 'Updating serial number for next write'
+                self.serialNum = newSerial
+                self.gotSerialNum = True
                 self.have = self.have[self.padding2:]
             else:
                 return
@@ -195,21 +126,13 @@ class TCPResolver(Protocol):
                 return
         # if we've reached this point, we have all the data
         print 'Received', self.filepath
-        try:
-            process(self.data, self.filepath, self.serialNum)
-        except KeyboardInterrupt:
-            self.sendid = '\x00\x00\x00\x00'
-            raise
-        except BaseException as err: # If there's an exception of any kind, set sendid
-            print err
-            traceback.print_exc()
-            self.sendid = '\x00\x00\x00\x00'
-        finally:
-            self.transport.write(self.sendid)
-            self._setup()
+        self._processdata()
+        self._setup()
             
     def connectionLost(self, reason):
         print 'Connection lost:', self.transport.getPeer()
+        print 'Writing pending data...'
+        self._writecsv()
         
     def connectionMade(self):
         self.have = ''
@@ -222,8 +145,90 @@ class TCPResolver(Protocol):
         self.lengthserial = None
         self.lengthd = None
         self.filepath = None
-        self.serialNum = None
+        self.gotSerialNum = False
         self.data = None
+        
+    def _processdata(self):
+        if self.firstfilepath is None:
+            self.firstfilepath = self.filepath # the first filepath for the N sec. interval
+        parseddata = parse(self.data)
+        received_file = {'name': self.filepath,
+                         'data': Binary(self.data),
+                         'published': False,
+                         'time_received': datetime.datetime.utcnow(),
+                         'serial_number': self.serialNum}
+        latest_time.insert({'name': self.filepath, 'time_received': datetime.datetime.utcnow(), 'serial_number': self.serialNum})
+        mongoiddeferred = received_files.insert(received_file)
+        mongoiddeferred.addCallback(self._finishprocessing, parseddata)
+        mongoiddeferred.addErrback(databaseerror, self.transport)
+        
+    def _finishprocessing(self, mongoid, parseddata):
+        self._parsed.extend(parseddata)
+        self._mongoids.append(mongoid)
+        self.transport.write(self.sendid)
+        if len(self._parsed) >= NUM_SECONDS_PER_FILE:
+            try:
+                self._writecsv()
+            except BaseException as be:
+                print 'Could not write to CSV file'
+                print 'Details:', be
+            
+    def _writecsv(self):
+        """ Attempts to write data in self._parsed to CSV file. Upon success, updates the mongo
+        database to indicate that their data have been published and returns True. Upon failure,
+        returns False. """
+        success = True
+        if not self._parsed:
+            return
+        parsedcopy = self._parsed
+        self._parsed = []
+        mongoidscopy = self._mongoids
+        self._mongoids = []
+        filepath = self.firstfilepath
+        self.firstfilepath = None
+        try:
+            parsedcopy.sort(key=lambda x: x.sync_data.times)
+            check_duplicates(parsedcopy)
+            firstTime = time_to_str(parsedcopy[0].sync_data.times)
+            lastTime = time_to_str(parsedcopy[-1].sync_data.times)
+            dirtowrite = 'output/{0}/'.format(aliases.get(self.serialNum, self.serialNum))
+            subdirs = filepath.rsplit('/', DIRDEPTH)
+            if subdirs[-1].endswith('.dat'):
+                subdirs[-1] = subdirs[-1][:-4]
+            if len(subdirs) <= DIRDEPTH + 1:
+                print 'WARNING: filepath {0} has insufficient depth'.format(filepath)
+            dirtowrite += '/'.join(subdirs[1:-1])
+            if not os.path.exists(dirtowrite):
+                os.makedirs(dirtowrite)
+            filename = '{0}/{1}__{2}__{3}.csv'.format(dirtowrite, self.serialNum, firstTime, lastTime)
+            print 'Writing file {0}'.format(filename)
+            with open(filename, 'wb') as f:
+                writer = csv.writer(f)
+                writer.writerow(firstrow)
+                writer.writerows(lst_to_rows(parsedcopy))
+        except KeyboardInterrupt:
+            success = False
+        except BaseException as be:
+            success = False
+            print 'WARNING: write could not be completed due to exception'
+            print 'Details: {0}'.format(be)
+            print 'Traceback:'
+            traceback.print_exc()
+        finally:
+            if success:
+                for mongoid in mongoidscopy:
+                    d = received_files.update({'_id': mongoid}, {'$set': {'published': True}})
+                    d.addErrback(print_mongo_error)
+                return True
+            return False
+            
+def print_mongo_error(err):
+    print 'WARNING: could not update Mongo Database with recent write'
+    
+def databaseerror(err, transport):
+    print 'Could not update database:', err
+    transport.write('\x00\x00\x00\x00')
+
 
 class ResolverFactory(Factory):
     def buildProtocol(self, addr):
@@ -233,6 +238,10 @@ def setup(mconn):
      global received_files, latest_time
      received_files = mconn.upmu_database.received_files
      latest_time = mconn.upmu_database.latest_time
+     with open('serial_aliases.ini', 'r') as f:
+         for line in f:
+             pair = line.split('=')
+             aliases[pair[0]] = pair[1]
      endpoint = TCP4ServerEndpoint(reactor, ADDRESSP)
      endpoint.listen(ResolverFactory())
 
