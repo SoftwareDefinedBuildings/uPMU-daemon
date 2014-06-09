@@ -13,14 +13,18 @@ import traceback
 
 from parser import sync_output, parse_sync_output
 from sys import argv
+from twisted.internet import reactor, defer
+from twisted.internet.protocol import Protocol, Factory
+from twisted.internet.endpoints import TCP4ServerEndpoint
 from utils import *
 
-backupdb = True # If we can back up to pymongo
+backupdb = True # If we can back up to mongo
 
 try:
-    import pymongo
+    import txmongo
+    from txmongo._pymongo.binary import Binary
 except ImportError:
-    print 'Library \"pymongo\" is not installed. Backup to Mongo Database is disabled.'
+    print 'Library \"txmongo\" is not installed. Backup to Mongo Database is disabled.'
     backupdb = False
 
 numouts = 0
@@ -50,11 +54,8 @@ if argv[-1] == '-n':
         print 'Backup to Mongo Database is disabled.'
         backupdb = False
     
-# Set up Mongo DB if it hasn't been disabled
-if backupdb:
-    mclient = pymongo.MongoClient()
-    db = mclient.upmu_database
-    received_files = db.received_files
+# Mongo DB collection
+received_files = None
 
 if csv_mode:
     NUM_SECONDS_PER_FILE = int(argv[2])
@@ -100,26 +101,29 @@ def parse(string):
     return lst
     
 
-def process(data):
+def process(data, datfilepath):
     """ Converts DATA (in the form of a string) to sync_output objects and
     adds them to the list of processed objects. When enough objects have been
     processed, they are converted to a CSV file"""
-    datalock.acquire()
-    try:
-        parsed.extend(parse(data))
-        if backupdb:
-            received_file = {'name': datfilepath,
-                             'data': bson.binary.Binary(data, bson.binary.BINARY_SUBTYPE),
-                             'published': False,
-                             'time_received': datetime.datetime.utcnow()}
-            mongoid = received_files.insert(received_file)
-            mongoids.append(mongoid)
-    finally:
-        datalock.release()
-    if csv_mode and len(parsed) >= NUM_SECONDS_PER_FILE:
-        publishThread = threading.Thread(target = publish)
-        publishThread.start()
+    datalock.acquire() # released in finishprocessing
+    parsed.extend(parse(data))
+    if backupdb:
+        received_file = {'name': datfilepath,
+                         'data': Binary(data, bson.binary.BINARY_SUBTYPE),
+                         'published': False,
+                         'time_received': datetime.datetime.utcnow()}
+        mongoiddeferred = received_files.insert(received_file)
+        mongoiddeferred.addCallback(finishprocessing)
+    elif csv_mode and len(parsed) >= NUM_SECONDS_PER_FILE:
+        publish()
         
+def finishprocessing(mongoid):
+    mongoids.append(mongoid)
+    datalock.release()
+    if csv_mode and len(parsed) >= NUM_SECONDS_PER_FILE:
+        publish()
+        
+# Out of service - do not use
 def publish():
     """ Attempts to publish data in PARSED to sMAP. Upon success, updates mongo documents with ids in
     MONGOIDS to indicate that their data have been published and returns True. Upon failure,
@@ -183,6 +187,7 @@ def publish():
             write_backup(parsedcopy) # on failure, write data to file if it could not be published
             return False
 
+
 def write_csv():
     """ Attempts to write data in PARSED to CSV file. Upon success, updates mongo documents with ids in
     MONGOIDS to indicate that their data have been published and returns True. Upon failure,
@@ -221,18 +226,16 @@ def write_csv():
     finally:
         if success:
             if backupdb:
-                try:
-                    for mongoid in mongoidscopy:
-                        received_files.update({'_id': mongoid}, {'$set': {'published': True}})
-                except pymongo.errors.OperationFailure:
-                    print 'WARNING: could not update Mongo Database with recent write'
-                    print 'Relevant IDs are:'
-                    for mongoid in mongoidscopy:
-                        print mongoid
+                for mongoid in mongoidscopy:
+                    d = received_files.update({'_id': mongoid}, {'$set': {'published': True}})
+                    d.addErrback(print_mongo_error)
             return True
         elif not backupdb:
             write_backup(parsedcopy)
             return False
+            
+def print_mongo_error(err):
+    print 'WARNING: could not update Mongo Database with recent write'
     
 def write_backup(structs):
     """ Writes a backup of the structs in STRUCTS, a list of sync_output structs, to a file
@@ -255,6 +258,117 @@ def write_backup(structs):
 t = None # A timer for publishing repeatedly
 restart = True # Determines whether data will be published again
 
+if csv_mode:
+    publish = write_csv
+else:
+    # Set up thread for publishing repeatedly
+    def publish_repeatedly():
+        global t
+        if restart:
+            t = threading.Timer(NUM_SECONDS_PER_FILE, publish_repeatedly)
+            t.start()
+        publish()
+    # Start publishing repeatedly
+    publish_repeatedly()
+
+class TCPResolver(Protocol):
+    def dataReceived(self, data):
+        self.have += data
+        if self.sendid is None:
+            if len(self.have) >= 4:
+                self.sendid = self.have[:4]
+                self.have = self.have[4:]
+            else:
+                return
+        if self.lengths is None:
+            if len(self.have) >= 8:
+                self.lengths, self.lengthd = struct.unpack('<ii', self.have[:8])
+                self.paddingbytes = 4 - (self.lengths % 4)
+                self.have = self.have[8:]
+            else:
+                return
+        if self.filepath is None:
+            if len(self.have) >= self.lengths:
+                self.filepath = self.have[:self.lengths]
+                self.have = self.have[self.lengths + self.paddingbytes:]
+            else:
+                return
+        if self.data is None:
+            if len(self.have) >= self.lengthd:
+                self.data = self.have[:self.lengthd]
+                self.have = self.have[self.lengthd:]
+                if self.have:
+                    print 'WARNING: got {0} extra bytes'.format(len(self.have))
+                    self.have = ''
+            else:
+                return
+        # if we've reached this point, we have all the data
+        print 'Received', self.filepath
+        try:
+            process(self.data, self.filepath)
+        except KeyboardInterrupt:
+            self.sendid = '\x00\x00\x00\x00'
+            raise
+        except BaseException as err: # If there's an exception of any kind, set sendid
+            print err
+            traceback.print_exc()
+            self.sendid = '\x00\x00\x00\x00'
+        finally:
+            self.transport.write(self.sendid)
+            self.sendid = None
+            self.lengths = None
+            self.lengthd = None
+            self.filepath = None
+            self.data = None
+            
+    def connectionLost(self, reason):
+        print 'Connection lost: ', self.transport.getPeer()
+        
+    def connectionMade(self):
+        self.have = ''
+        self.sendid = None
+        self.lengths = None
+        self.lengthd = None
+        self.filepath = None
+        self.data = None
+        print 'Connected: ', self.transport.getPeer()
+
+class ResolverFactory(Factory):
+    def buildProtocol(self, addr):
+        return TCPResolver()
+
+def setup(mconn=None):
+     global received_files
+     if mconn is not None:
+         received_files = mconn.upmu_database.received_files
+     endpoint = TCP4ServerEndpoint(reactor, ADDRESSP)
+     endpoint.listen(ResolverFactory())
+
+def termerror(e):
+    print "terminal error", e
+    lg.error("TERMINAL ERROR: \n%s",e)
+    return defer.FAILURE
+         
+if backupdb:
+    d = txmongo.MongoConnection()
+    d.addCallbacks(setup, termerror)
+    d.addErrback(termerror)
+else:
+    setup()
+
+reactor.run()
+
+"""
+# Receive and process data
+connected = False
+server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+try:
+    server_socket.bind(('', ADDRESSP))
+except socket.error as se:
+    print 'Could not set up server socket: {0}'.format(se)
+    restart = False
+    exit()
+
 def receive_all_data(socket, numbytes):
     data = ''
     while numbytes > 0:
@@ -271,29 +385,6 @@ def close_connection():
         connect_socket.close()
     server_socket.shutdown(socket.SHUT_RDWR)
     server_socket.close()
-
-# Receive and process data
-connected = False
-server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
-try:
-    server_socket.bind(('', ADDRESSP))
-except socket.error as se:
-    print 'Could not set up server socket: {0}'.format(se)
-    restart = False
-    exit()
-    
-if csv_mode:
-    publish = write_csv
-else:
-    # Set up thread for publishing repeatedly
-    def publish_repeatedly():
-        global t
-        if restart:
-            t = threading.Timer(NUM_SECONDS_PER_FILE, publish_repeatedly)
-            t.start()
-        publish()
-    # Start publishing repeatedly
-    publish_repeatedly()
 
 try:
     server_socket.listen(10)
@@ -359,3 +450,4 @@ finally:
             t.cancel()
         publish()
         exit()
+"""
