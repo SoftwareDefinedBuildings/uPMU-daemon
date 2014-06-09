@@ -39,7 +39,13 @@ if len(argv) not in (2, 3):
     argv = argv[:1] + ["900"]
     
 if len(argv) == 3:
-    DIRDEPTH = argv[2]
+    try:
+        DIRDEPTH = int(argv[2])
+        if DIRDEPTH <= 0:
+            raise ValueError
+    except ValueError:
+        print 'Depth of input directory must be a positive integer'
+        exit()
     
 # Mongo DB collection
 received_files = None
