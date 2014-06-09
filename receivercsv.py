@@ -35,6 +35,7 @@ if len(argv) != 2:
     
 # Mongo DB collection
 received_files = None
+latest_time = None
 
 NUM_SECONDS_PER_FILE = int(argv[1])
 # The first row of every csv file has lables
@@ -78,6 +79,7 @@ def process(data, datfilepath, serial):
                      'published': False,
                      'time_received': datetime.datetime.utcnow(),
                      'serial_number': serial}
+    latest_time.insert({'name': datfilepath, 'time_received': datetime.datetime.utcnow(), 'serial_number': serial})
     mongoiddeferred = received_files.insert(received_file)
     mongoiddeferred.addCallback(finishprocessing, parseddata)
     mongoiddeferred.addErrback(databaseerror, parseddata)
@@ -228,8 +230,9 @@ class ResolverFactory(Factory):
         return TCPResolver()
 
 def setup(mconn):
-     global received_files
+     global received_files, latest_time
      received_files = mconn.upmu_database.received_files
+     latest_time = mconn.upmu_database.latest_time
      endpoint = TCP4ServerEndpoint(reactor, ADDRESSP)
      endpoint.listen(ResolverFactory())
 

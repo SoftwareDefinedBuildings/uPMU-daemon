@@ -56,6 +56,7 @@ if argv[-1] == '-n':
     
 # Mongo DB collection
 received_files = None
+latest_time = None
 
 if csv_mode:
     NUM_SECONDS_PER_FILE = int(argv[2])
@@ -113,6 +114,7 @@ def process(data, datfilepath, serial):
                          'published': False,
                          'time_received': datetime.datetime.utcnow(),
                          'serial_number': serial}
+        latest_time.insert({'name': datfilepath, 'time_received': datetime.datetime.utcnow(), 'serial_number': serial})
         mongoiddeferred = received_files.insert(received_file)
         mongoiddeferred.addCallback(finishprocessing)
     elif csv_mode and len(parsed) >= NUM_SECONDS_PER_FILE:
@@ -347,9 +349,10 @@ class ResolverFactory(Factory):
         return TCPResolver()
 
 def setup(mconn=None):
-     global received_files
+     global received_files, latest_time
      if mconn is not None:
          received_files = mconn.upmu_database.received_files
+         latest_time = mconn.upmu_database.latest_time
      endpoint = TCP4ServerEndpoint(reactor, ADDRESSP)
      endpoint.listen(ResolverFactory())
 
