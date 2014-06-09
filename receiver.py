@@ -39,6 +39,11 @@ mongoids = [] # Stores ids of mongo documents
 
 csv_mode = False
 
+# Hardcoded arguments support
+if len(argv) == 2 and argv[1] == "hardcoded":
+    argv[1:] = ["-c",str(15*60)]
+    print "Using hardcoded arguments: ", argv
+
 # Check command line arguments
 if len(argv) not in (3, 4, 5) or (len(argv) == 5 and argv[1] == '-c') or (len(argv) == 3 and argv[1] != '-c'):
     print 'Usage: ./receiver.py <archiver url> <subscription key> <num clock seconds per publish>'

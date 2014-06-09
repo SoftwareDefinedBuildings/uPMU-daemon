@@ -35,7 +35,8 @@ mongoids = [] # Stores ids of mongo documents
 # Check command line arguments
 if len(argv) not in (2, 3):
     print 'Usage: ./receiver.py <num data seconds per file> [<depth of input directory>]'
-    exit()
+    print ' but for your convenience I am defaulting to 900 and 5'
+    argv = argv[0] + ["900"]
     
 if len(argv) == 3:
     DIRDEPTH = argv[2]
