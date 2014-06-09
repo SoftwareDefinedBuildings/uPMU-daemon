@@ -57,6 +57,26 @@ struct sockaddr* server_addr;
 // the id of the next message sent to the server
 uint32_t sendid = 1;
 
+void remove_dir(const char* dirpath)
+{
+    errno = 0;
+    if (rmdir(dirpath) == 0)
+    {
+        printf("Successfully removed directory %s\n", dirpath);
+    }
+    else
+    {
+        if (errno == ENOTEMPTY || errno == EEXIST)
+        {
+            printf("Directory %s not removed: still contains files\n", dirpath);
+        }
+        else
+        {
+            printf("Directory %s not removed: no permissions OR directory in use\n", dirpath);
+        }
+    }
+}
+
 /* Close the socket connection. */
 void close_connection(int socket_descriptor)
 {
@@ -113,7 +133,7 @@ int send_file(int socket_descriptor, const char* filepath, int inRootDir)
     const char* substr = filepath + strlen(filepath) - 4;
     if (strcmp(substr, ".dat") != 0)
     {
-        printf("skipping over file that is not \".dat\"\n");
+        printf("Skipping over file that is not \".dat\"\n");
         return 0;
     }
     
@@ -282,7 +302,7 @@ long parse_filename(const char* filename)
 }
 
 /* Processes directory, sending files and adding watches (uses information in global variables) */
-int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int depth)
+int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int depth, int addwatchtosubs)
 {
     if (strlen(dirpath) >= FULLPATHLEN - 5)
     {
@@ -408,18 +428,21 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
     {
         strcpy(fullpath, dirpath);
         strcat(fullpath, subdirarr[subdirIndex].filename);
-        result = processdir(fullpath, socket_descriptor, inotify_fd, depth + 1);
+        result = processdir(fullpath, socket_descriptor, inotify_fd, depth + 1, addwatchtosubs && (subdirIndex == (numsubdirs - 1)));
         if (result < 0)
         {
             return -1;
         }
+        if (addwatchtosubs && (subdirIndex == (numsubdirs - 1)))
+        {
+            children[depth].fd = inotify_add_watch(inotify_fd, fullpath, IN_CREATE | IN_CLOSE_WRITE);
+            strcpy(children[depth].path, fullpath);
+        }
+        else
+        {
+            remove_dir(fullpath);
+        }
     }
-    if (subdirIndex != 0) // if we saw files, watch the last one
-    {
-        children[depth].fd = inotify_add_watch(inotify_fd, fullpath, IN_CREATE | IN_CLOSE_WRITE);
-        strcpy(children[depth].path, fullpath);
-    }
-    
     free(subdirarr);
     
     if (depth == 0)
@@ -489,7 +512,7 @@ int main(int argc, char* argv[])
     
     // This watch will notice any new files or subdirectories in the directory we are watching
     inotify_add_watch(fd, argv[1], IN_CREATE | IN_CLOSE_WRITE);
-    if (processdir(argv[1], &socket_des, fd, 0) < 0)
+    if (processdir(argv[1], &socket_des, fd, 0, 1) < 0)
     {
         safe_exit(1);
     }
@@ -499,7 +522,7 @@ int main(int argc, char* argv[])
     struct timeval timeout;
     int rlen;
 
-    int i;
+    int i, j;
     
     char fullname[FULLPATHLEN];
 
@@ -532,7 +555,8 @@ int main(int argc, char* argv[])
                 /* Check for a new directory */
                 if ((IN_CREATE & ev->mask) && (IN_ISDIR & ev->mask))
                 {
-                    // Find the correct depth
+                    printf("new directory noticed\n");
+                    // Find the correct depth, store it in i
                     for (i = 0; i < MAXDEPTH; i++)
                     {
                         if (children[i].fd == ev->wd)
@@ -545,12 +569,24 @@ int main(int argc, char* argv[])
                     {
                         i = 0;
                     }
-                    // remove watch from that depth
-                    if (inotify_rm_watch(fd, children[i].fd))
-                    {
-                        perror("RM watch");
-                    }
+                    
+                    // remove watch from depth i and below and delete directories if possible
                     printf("%d %s\n", i, children[i].path);
+                    for (j = MAXDEPTH - 1; j >= i; j--)
+                    {
+                        if (children[j].fd != -1) // if it has already been deleted, don't do anything
+                        {
+                            if (inotify_rm_watch(fd, children[j].fd))
+                            {
+                                perror("RM watch");
+                            }
+                            else
+                            {
+                                children[j].fd = -1; // mark it as deleted
+                            }
+                            remove_dir(children[j].path);
+                        }
+                    }
                     
                     char* parentname;
                     if (i == 0)
