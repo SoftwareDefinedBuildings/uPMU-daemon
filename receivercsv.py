@@ -158,8 +158,7 @@ class TCPResolver(Protocol):
                          'published': False,
                          'time_received': datetime.datetime.utcnow(),
                          'serial_number': self.serialNum}
-        docsDeferred = latest_time.find_one({'serial_number': self.serialNum})
-        docsDeferred.addCallback(update_latest_time, received_file['time_received'], self.serialNum)
+        docsDeferred = latest_time.update({'serial_number': self.serialNum}, {'$set': {'time_received': received_file['time_received']}}, upsert = True)
         docsDeferred.addErrback(latest_time_error, self.serialNum)
         mongoiddeferred = received_files.insert(received_file)
         mongoiddeferred.addCallback(self._finishprocessing, parseddata)
@@ -231,14 +230,6 @@ def print_mongo_error(err):
 def databaseerror(err, transport):
     print 'Could not update database:', err
     transport.write('\x00\x00\x00\x00')
-
-def update_latest_time(curr_doc, newtime, serialnumber):
-    print 'Got', curr_doc
-    if curr_doc == {}:
-        d = latest_time.insert({'serial_number': serialnumber, 'time_received': newtime})
-    else:
-        d = latest_time.update({'serial_number': serialnumber}, {'$set': {'time_received': newtime}})
-    d.addErrback(latest_time_error, serialnumber)
         
 def latest_time_error(err, serialnumber):
     print 'Cannot update latest_time collection for serial number', serialnumber
