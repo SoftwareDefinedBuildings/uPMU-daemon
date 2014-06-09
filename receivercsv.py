@@ -36,7 +36,7 @@ mongoids = [] # Stores ids of mongo documents
 if len(argv) not in (2, 3):
     print 'Usage: ./receiver.py <num data seconds per file> [<depth of input directory>]'
     print ' but for your convenience I am defaulting to 900 and 5'
-    argv = argv[0] + ["900"]
+    argv = argv[:1] + ["900"]
     
 if len(argv) == 3:
     DIRDEPTH = argv[2]
@@ -134,6 +134,7 @@ class TCPResolver(Protocol):
         print 'Connection lost:', self.transport.getPeer()
         print 'Writing pending data...'
         self._writecsv()
+        print 'Finished writing pending data'
         
     def connectionMade(self):
         self.have = ''
@@ -243,10 +244,13 @@ def setup(mconn):
      global received_files, latest_time
      received_files = mconn.upmu_database.received_files
      latest_time = mconn.upmu_database.latest_time
-     with open('serial_aliases.ini', 'r') as f:
-         for line in f:
-             pair = line.split('=')
-             aliases[pair[0]] = pair[1]
+     try:
+         with open('serial_aliases.ini', 'r') as f:
+             for line in f:
+                 pair = line.split('=')
+                 aliases[pair[0]] = pair[1]
+     except:
+         print 'WARNING: Could not read serial_aliases.ini'
      endpoint = TCP4ServerEndpoint(reactor, ADDRESSP)
      endpoint.listen(ResolverFactory())
 
