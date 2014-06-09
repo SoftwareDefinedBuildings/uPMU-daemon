@@ -323,19 +323,17 @@ class TCPResolver(Protocol):
             self.sendid = '\x00\x00\x00\x00'
         finally:
             self.transport.write(self.sendid)
-            self.sendid = None
-            self.lengths = None
-            self.lengthserial = None
-            self.lengthd = None
-            self.filepath = None
-            self.serialNum = None
-            self.data = None
+            self._setup()
             
     def connectionLost(self, reason):
         print 'Connection lost:', self.transport.getPeer()
         
     def connectionMade(self):
         self.have = ''
+        self._setup()
+        print 'Connected:', self.transport.getPeer()
+        
+    def _setup(self):
         self.sendid = None
         self.lengths = None
         self.lengthserial = None
@@ -343,7 +341,6 @@ class TCPResolver(Protocol):
         self.filepath = None
         self.serialNum = None
         self.data = None
-        print 'Connected:', self.transport.getPeer()
 
 class ResolverFactory(Factory):
     def buildProtocol(self, addr):
