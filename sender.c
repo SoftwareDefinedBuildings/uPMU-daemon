@@ -1,6 +1,5 @@
 #define EVENT_BUF_LEN 128 * ( sizeof (struct inotify_event) )
 #define EVENT_SIZE  ( sizeof (struct inotify_event) )
-#define ADDRESSP 1883
 #define FULLPATHLEN 256 // the maximum length of a full file path
 #define FILENAMELEN 128 // the maximum length of a file or directory name (within the root directory)
 #define TIMEDELAY 10 // the number of seconds to wait between subsequent tries to reconnect
@@ -20,6 +19,8 @@
 #include <arpa/inet.h>
 
 /* When my comments refer to the "root directory", they mean the directory the program is watching */
+
+int ADDRESSP = 1883;
 
 typedef struct 
 {
@@ -425,15 +426,27 @@ void interrupt_handler(int sig)
 
 int main(int argc, char* argv[])
 {
-    if (argc != 4)
+    if (argc != 4 && argc != 5)
     {
-        printf("Usage: %s <directorytowatch> <targetserver> <uPMU serial number>\n", argv[0]);
+        printf("Usage: %s <directorytowatch> <targetserver> <uPMU serial number> [<port number>]\n", argv[0]);
         safe_exit(1);
     }
     
     serialNum = argv[3];
     size_serial = strlen(serialNum);
     size_serial_word = roundUp4(size_serial);
+    
+    if (argc == 5)
+    {
+        errno = 0;
+        unsigned long port = strtoul(argv[4], NULL, 0);
+        if (port > 65535 || port == 0 || errno != 0)
+        {
+            printf("Invalid port %s\n", argv[4]);
+            safe_exit(1);
+        }
+        ADDRESSP = (int) port;
+    }
     
     // Set up signal to handle Ctrl-C (close socket connection before terminating)
     struct sigaction action;

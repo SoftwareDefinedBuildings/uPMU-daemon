@@ -1,11 +1,11 @@
 #!/usr/bin/python
 
+import argparse
 import bson
 import calendar
 import csv
 import datetime
 import os
-import smtplib
 import socket
 import struct
 import thread
@@ -13,57 +13,44 @@ import threading
 import traceback
 import txmongo
 
-from email.mime.text import MIMEText
-from emailmessages import *
 from parser import sync_output, parse_sync_output
 from sys import argv
 from twisted.internet import reactor, defer
 from twisted.internet.protocol import Protocol, Factory
 from twisted.internet.endpoints import TCP4ServerEndpoint
-from twisted.internet.task import LoopingCall
 from txmongo._pymongo.binary import Binary
 from utils import *
 
-ADDRESSP = 1883
-
-CHECKTIME = 300
-
-ALERTTIME = 1800
-
-# Addresses for sending email notifications
-senderaddr = 'samkumar@berkeley.edu'
-receiveraddr = 'samkumar@berkeley.edu'
-
+# Maps serial numbers to their aliases
 aliases = {}
-
-DIRDEPTH = 5
-
-NUM_SECONDS_PER_FILE = 10
 
 parsed = [] # Stores parsed sync_output structs
 
 mongoids = [] # Stores ids of mongo documents
 
-# Check command line arguments
-if len(argv) not in (2, 3):
-    print 'Usage: ./receiver.py <num data seconds per file> [<depth of input directory>]'
-    print ' but for your convenience I am defaulting to 900 and 5'
-    argv = argv[:1] + ["900"]
+# Parse command line arguments
+parser = argparse.ArgumentParser()
+parser.add_argument('-s', '--seconds', help='the number of seconds per output csv file', type=int, default=900)
+parser.add_argument('-d', '--depth', help='the depth of the files in the directory structure being sent (top level is at depth 1)', type=int, default=5)
+parser.add_argument('-o', '--output', help='the directory in which to store the csv files', default='output/')
+parser.add_argument('-p', '--port', help='the port at which to accept incoming messages', type=int, default=1883)
+args = parser.parse_args()
+
+NUM_SECONDS_PER_FILE = args.seconds
+
+DIRDEPTH = args.depth
+
+OUTPUTDIR = args.output
+if args.output[-1] != '/':
+    OUTPUTDIR += '/'
+
+ADDRESSP = args.port
     
-if len(argv) == 3:
-    try:
-        DIRDEPTH = int(argv[2])
-        if DIRDEPTH <= 0:
-            raise ValueError
-    except ValueError:
-        print 'Depth of input directory must be a positive integer'
-        exit()
-    
-# Mongo DB collection
+# Mongo DB collections (will be set later)
 received_files = None
 latest_time = None
+warnings = None
 
-NUM_SECONDS_PER_FILE = int(argv[1])
 # The first row of every csv file has lables
 firstrow = ['time', 'lockstate']
 for start in ('L', 'C'):
@@ -94,72 +81,14 @@ def parse(string):
         lst.append(obj)
     return lst
     
-def sendMsg(message):
-    txt = MIMEText(message)
-    del txt['Subject']
-    txt['Subject'] = 'Automated uPMU Notification'
-    del txt['From']
-    txt['From'] = senderaddr
-    del txt['To']
-    txt['To'] = receiveraddr
-    created = False
-    try:
-        emailsender = smtplib.SMTP('localhost')
-        created = True
-        emailsender.sendmail(senderaddr, [receiveraddr], txt.as_string())
-        emailsender.quit()
-        created = False
-    except smtplib.SMTPSenderRefused:
-        print 'WARNING: email not sent because sender {0} was refused'.format(senderaddr)
-    except smtplib.SMTPRecipientsRefused:
-        print 'WARNING: email not sent because recipient {0} was refused'.format(receiveraddr)
-    except BaseException as be:
-        print 'WARNING: email not sent due to unknown reason'
-        print 'Details:', be
-    finally:
-        if created:
-            emailsender.quit()
-    
 class TCPResolver(Protocol):
     def __init__(self):
         self._parsed = []
         self._mongoids = []
         self.firstfilepath = None
         self.serialNum = None
-        self.activityChecker = LoopingCall(self._checkActivity) # Check for activity every CHECKTIME seconds
-        self.activityChecker.start(CHECKTIME, False)
-        self.silentSecs = 0 # Approximate number of seconds of no activity
-        self.messageSent = False
-        
-    def _checkActivity(self):
-        d = latest_time.find_one({'serial_number': self.serialNum})
-        if self.serialNum is None:
-            self.silentSecs += CHECKTIME
-            if self.silentSecs > ALERTTIME and not self.messageSent:
-                self.messageSent = True
-                sendMsg(makeNoSerialMessage(ALERTTIME, self.transport.getPeer()))
-        else:
-            d.addCallback(self._finishCheckingActivity)
-            d.addErrback(self._errorCheckingActivity)
-            
-    def _finishCheckingActivity(self, document):
-        if document == {}:
-            silentSecs += CHECKTIME
-            if self.silentSecs > ALERTTIME and not self.messageSent:
-                self.messageSent = True
-                sendMsg(makeSerialMessage(ALERTTIME, self.serialNum, self.transport.getPeer()))
-            return
-        timediff = datetime.datetime.utcnow() - document['time_received']
-        if timediff.total_seconds() >= ALERTTIME and not self.messageSent:
-            self.messageSent = True
-            sendMsg(makeSerialMessage(ALERTTIME, self.serialNum, self.transport.getPeer()))
-            
-    def _errorCheckingActivity(self, error):
-        print 'WARNING: could not check for lack of activity to send email'
-        print 'Details:', error
         
     def dataReceived(self, data):
-        self.messageSent = False
         self.have += data
         if self.sendid is None:
             if len(self.have) >= 4:
@@ -267,10 +196,10 @@ class TCPResolver(Protocol):
         self.firstfilepath = None
         try:
             parsedcopy.sort(key=lambda x: x.sync_data.times)
-            check_duplicates(parsedcopy)
+            self._check_duplicates(parsedcopy)
             firstTime = time_to_str(parsedcopy[0].sync_data.times)
             lastTime = time_to_str(parsedcopy[-1].sync_data.times)
-            dirtowrite = 'output/{0}/'.format(aliases.get(self.serialNum, self.serialNum))
+            dirtowrite = '{0}{1}/'.format(OUTPUTDIR, aliases.get(self.serialNum, self.serialNum))
             subdirs = filepath.rsplit('/', DIRDEPTH)
             if subdirs[-1].endswith('.dat'):
                 subdirs[-1] = subdirs[-1][:-4]
@@ -297,12 +226,31 @@ class TCPResolver(Protocol):
             if success:
                 for mongoid in mongoidscopy:
                     d = received_files.update({'_id': mongoid}, {'$set': {'published': True}})
-                    d.addErrback(print_mongo_error)
+                    d.addErrback(print_mongo_error, 'write')
                 return True
             return False
             
-def print_mongo_error(err):
-    print 'WARNING: could not update Mongo Database with recent write'
+    def _check_duplicates(self, sorted_struct_list):
+        # Check if the structs have duplicates or missing items, print warnings and update Mongo if so
+        dates = tuple(datetime.datetime(*s.sync_data.times) for s in sorted_struct_list)
+        i = 1
+        while i < len(dates):
+            date1 = dates[i-1]
+            date2 = dates[i]
+            delta = int((date2 - date1).total_seconds() + 0.5) # round difference to nearest second
+            if delta == 0:
+                d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'duplicate', 'warning_time': datetime.datetime.utcnow(), 'start_time': date2})
+                d.addErrback(print_mongo_error, 'warning')
+                print 'WARNING: duplicate record for {0}'.format(str(date2))
+            elif delta != 1:
+                d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'missing', 'warning_time': datetime.datetime.utcnow(), 'start_time': date1, 'end_time': date2})
+                d.addErrback(print_mongo_error, 'warning')
+                print 'WARNING: missing record(s) (skips from {0} to {1})'.format(str(date1), str(date2))
+            i += 1
+            
+def print_mongo_error(err, task):
+    print 'WARNING: could not update Mongo Database with recent {0}'.format(task)
+    print 'Details:', err
     
 def databaseerror(err, transport):
     print 'Could not update database:', err
@@ -317,9 +265,10 @@ class ResolverFactory(Factory):
         return TCPResolver()
 
 def setup(mconn):
-     global received_files, latest_time
-     received_files = mconn.upmu_database.received_files
-     latest_time = mconn.upmu_database.latest_time
+     global received_files, latest_time, warnings
+     received_files = mconn.upmu_database.received_files_test
+     latest_time = mconn.upmu_database.latest_time_test
+     warnings = mconn.upmu_database.warnings_test
      try:
          with open('serial_aliases.ini', 'r') as f:
              for line in f:
