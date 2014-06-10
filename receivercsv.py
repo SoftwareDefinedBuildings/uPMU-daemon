@@ -266,9 +266,9 @@ class ResolverFactory(Factory):
 
 def setup(mconn):
      global received_files, latest_time, warnings
-     received_files = mconn.upmu_database.received_files_test
-     latest_time = mconn.upmu_database.latest_time_test
-     warnings = mconn.upmu_database.warnings_test
+     received_files = mconn.upmu_database.received_files
+     latest_time = mconn.upmu_database.latest_time
+     warnings = mconn.upmu_database.warnings
      try:
          with open('serial_aliases.ini', 'r') as f:
              for line in f:

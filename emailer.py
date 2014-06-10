@@ -44,8 +44,8 @@ except:
     print 'WARNING: Could not read serial_aliases.ini'
 
 client = pymongo.MongoClient()
-latest_time = client.upmu_database.latest_time_test
-warnings = client.upmu_database.warnings_test
+latest_time = client.upmu_database.latest_time
+warnings = client.upmu_database.warnings
 
 inactive_serials = set()
 events = {} # maps each serial number to a list of EventMessages
