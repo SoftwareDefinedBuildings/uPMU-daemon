@@ -5,6 +5,7 @@ import calendar
 import csv
 import datetime
 import os
+import smtplib
 import socket
 import struct
 import thread
@@ -12,15 +13,26 @@ import threading
 import traceback
 import txmongo
 
+from email.mime.text import MIMEText
+from emailmessages import *
 from parser import sync_output, parse_sync_output
 from sys import argv
 from twisted.internet import reactor, defer
 from twisted.internet.protocol import Protocol, Factory
 from twisted.internet.endpoints import TCP4ServerEndpoint
+from twisted.internet.task import LoopingCall
 from txmongo._pymongo.binary import Binary
 from utils import *
 
 ADDRESSP = 1883
+
+CHECKTIME = 300
+
+ALERTTIME = 1800
+
+# Addresses for sending email notifications
+senderaddr = 'samkumar@berkeley.edu'
+receiveraddr = 'samkumar@berkeley.edu'
 
 aliases = {}
 
@@ -82,14 +94,72 @@ def parse(string):
         lst.append(obj)
     return lst
     
+def sendMsg(message):
+    txt = MIMEText(message)
+    del txt['Subject']
+    txt['Subject'] = 'Automated uPMU Notification'
+    del txt['From']
+    txt['From'] = senderaddr
+    del txt['To']
+    txt['To'] = receiveraddr
+    created = False
+    try:
+        emailsender = smtplib.SMTP('localhost')
+        created = True
+        emailsender.sendmail(senderaddr, [receiveraddr], txt.as_string())
+        emailsender.quit()
+        created = False
+    except smtplib.SMTPSenderRefused:
+        print 'WARNING: email not sent because sender {0} was refused'.format(senderaddr)
+    except smtplib.SMTPRecipientsRefused:
+        print 'WARNING: email not sent because recipient {0} was refused'.format(receiveraddr)
+    except BaseException as be:
+        print 'WARNING: email not sent due to unknown reason'
+        print 'Details:', be
+    finally:
+        if created:
+            emailsender.quit()
+    
 class TCPResolver(Protocol):
     def __init__(self):
         self._parsed = []
         self._mongoids = []
         self.firstfilepath = None
         self.serialNum = None
+        self.activityChecker = LoopingCall(self._checkActivity) # Check for activity every CHECKTIME seconds
+        self.activityChecker.start(CHECKTIME, False)
+        self.silentSecs = 0 # Approximate number of seconds of no activity
+        self.messageSent = False
+        
+    def _checkActivity(self):
+        d = latest_time.find_one({'serial_number': self.serialNum})
+        if self.serialNum is None:
+            self.silentSecs += CHECKTIME
+            if self.silentSecs > ALERTTIME and not self.messageSent:
+                self.messageSent = True
+                sendMsg(makeNoSerialMessage(ALERTTIME, self.transport.getPeer()))
+        else:
+            d.addCallback(self._finishCheckingActivity)
+            d.addErrback(self._errorCheckingActivity)
+            
+    def _finishCheckingActivity(self, document):
+        if document == {}:
+            silentSecs += CHECKTIME
+            if self.silentSecs > ALERTTIME and not self.messageSent:
+                self.messageSent = True
+                sendMsg(makeSerialMessage(ALERTTIME, self.serialNum, self.transport.getPeer()))
+            return
+        timediff = datetime.datetime.utcnow() - document['time_received']
+        if timediff.total_seconds() >= ALERTTIME and not self.messageSent:
+            self.messageSent = True
+            sendMsg(makeSerialMessage(ALERTTIME, self.serialNum, self.transport.getPeer()))
+            
+    def _errorCheckingActivity(self, error):
+        print 'WARNING: could not check for lack of activity to send email'
+        print 'Details:', error
         
     def dataReceived(self, data):
+        self.messageSent = False
         self.have += data
         if self.sendid is None:
             if len(self.have) >= 4:
