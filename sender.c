@@ -409,11 +409,6 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
         }
     }
     free(subdirarr);
-    
-    if (depth == 1)
-    {
-        printf("Finished processing existing files.\n");
-    }
     return 0;
 }
 
@@ -428,6 +423,12 @@ int main(int argc, char* argv[])
     {
         printf("Usage: %s <directorytowatch> <targetserver> <uPMU serial number> [<port number>]\n", argv[0]);
         safe_exit(1);
+    }
+    
+    int i, j;
+    for (i = 0; i < MAXDEPTH; i++)
+    {
+        children[i].fd = -1;
     }
     
     serialNum = argv[3];
@@ -502,15 +503,16 @@ int main(int argc, char* argv[])
     {
         safe_exit(1);
     }
+    printf("Finished processing existing files.\n");
     
     char buffer[EVENT_BUF_LEN];
 
     struct timeval timeout;
     int rlen;
-
-    int i, j;
     
     char fullname[FULLPATHLEN];
+
+    int index;
 
     while(1)
     {
@@ -526,16 +528,16 @@ int main(int argc, char* argv[])
             continue;
         }
         rlen = read(fd, buffer, EVENT_BUF_LEN);
-        i = 0;
+        index = 0;
         if (rlen == -1)
         {
             printf("Error (possibly caused by filepath that is too long)\n");
         }
         
-        while (i < rlen)
+        while (index < rlen)
         {
             result = 0;
-            struct inotify_event* ev = (struct inotify_event*) &buffer[i];
+            struct inotify_event* ev = (struct inotify_event*) &buffer[index];
             if (ev->len)
             {
                 /* Check for a new directory */
@@ -556,55 +558,45 @@ int main(int argc, char* argv[])
                         printf("WARNING: unexpected new directory past maximum depth (will be ignored)\n");
                     }
                     
-                    // remove watches from depth i and deeper and delete directories if possible
-                    printf("Found new directory %s at depth %d\n", children[i].path, i);
-                    for (j = MAXDEPTH; j >= i; j--)
-                    {
-                        if (children[j].fd != -1) // if it has already been deleted, don't do anything
-                        {
-                            if (inotify_rm_watch(fd, children[j].fd))
-                            {
-                                perror("RM watch");
-                            }
-                            else
-                            {
-                                children[j].fd = -1; // mark it as deleted
-                            }
-                            remove_dir(children[j].path);
-                        }
-                    }
-                    
                     char* parentname = children[i - 1].path;
                     strcpy(fullname, parentname);
                     strcat(fullname, ev->name);
                     strcat(fullname, "/");
-                    strcpy(children[i].path, fullname);
-                    printf("New path: %s\n", fullname);
-                    children[i].fd = inotify_add_watch(fd, children[i].path, IN_CREATE | IN_CLOSE_WRITE);
-                    
-                    // Ok great, but we may have missed some files, so let's check for them:
-                    DIR *basedir;
-                    struct dirent *dir;
-                    basedir = opendir(fullname);
-                    if (!basedir)
+                    if (strcmp(fullname, children[i].path) != 0) // check if we're already watching this (in case it was detected twice); if not, don't proceed
                     {
-                        perror("basedir");
-                        printf("Tried to open %s\n", fullname);
-                        safe_exit(1);
-                    }
-                    while ((dir = readdir(basedir)) != NULL)
-                    {
-                        if (dir->d_name[0] == '.')
-                            continue;
-                        printf("Checking out appeared file\n");
-                        strcpy(fullname, children[i].path);
-                        strcat(fullname, dir->d_name);
-                        if (send_until_success(&socket_des, fullname) == 1)
+                        // remove watches from depth i and deeper and delete directories if possible
+                        printf("Found new directory %s at depth %d\n", children[i].path, i);
+                        for (j = MAXDEPTH; j >= i; j--)
                         {
-                             printf("Could not read %s (file not sent)\n", fullname);
+                            if (children[j].fd != -1) // if it has already been deleted or there's no watch, don't do anything
+                            {
+                                if (inotify_rm_watch(fd, children[j].fd))
+                                {
+                                    perror("RM watch");
+                                }
+                                else
+                                {
+                                    children[j].fd = -1; // mark it as deleted
+                                }
+                                remove_dir(children[j].path);
+                            }
+                        }
+                        
+                        strcpy(children[i].path, fullname);
+                        printf("New path: %s\n", fullname);
+                        children[i].fd = inotify_add_watch(fd, children[i].path, IN_CREATE | IN_CLOSE_WRITE);
+                        
+                        // Ok great, but we may have missed some files, so let's check for them:
+                        if (processdir(fullname, &socket_des, fd, i + 1, 1) < 0)
+                        {
+                            printf("Processing existing files in %s\n", fullname);
+                            printf("WARNING: could not process existing files in newly created directory %s", fullname);
                         }
                     }
-                    closedir(basedir);
+                    else
+                    {
+                        printf("Directory already found\n");
+                    }
                 }
                 /* Check for a new file */
                 else if (((IN_CLOSE_WRITE) & ev->mask) && !(IN_ISDIR & ev->mask))
@@ -626,7 +618,7 @@ int main(int argc, char* argv[])
                     printf("Could not read %s (file already sent or deleted concurrently)\n", ev->name);
                 }
             }
-            i += EVENT_SIZE + ev->len;
+            index += EVENT_SIZE + ev->len;
         }
     }
 }
