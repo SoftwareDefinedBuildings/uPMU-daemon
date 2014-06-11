@@ -121,15 +121,18 @@ class EventMessage(object):
     
 class WarningMessage(EventMessage):
     warning = True
-    def __init__(self, description, gen_time, start_time, end_time = None):
+    def __init__(self, description, gen_time, start_time, end_time = None, prev_time = None):
         EventMessage.__init__(self, description, gen_time)
         self.start_time = start_time
         self.end_time = end_time
+        self.prev_time = prev_time
     def __str__(self):
         if self.description == 'duplicate':
             return 'WARNING: duplicate record for {0} (message generated at {1})'.format(self.start_time, self.event_time)
         elif self.description == 'missing':
             return 'WARNING: missing record(s): data skips from {0} to {1} (message generated at {2})'.format(self.start_time, self.end_time, self.event_time)
+        elif self.description == 'misplaced':
+            return 'WARNING: misplaced records(s) left uncorrected due to CSV boundary: new CSV file contains records from {0} to {1}, previous CSV file ends with record at {2} (message generated at {3})'.format(self.start_time, self.end_time, self.prev_time, self.event_time)
 
 while True:
     # Add messages to events queue
@@ -145,7 +148,7 @@ while True:
             add_event(serialNumber, EventMessage('inactive', lastReceived))
     warning_check = datetime.datetime.utcnow() # The time of this warning check
     for document in warnings.find({'warning_time': {'$gt': last_warning_check}}): # Check for warnings for missing/duplicate entries since the last time we checked
-        add_event(document['serial_number'], WarningMessage(document['warning_type'], document['warning_time'], document['start_time'], document.get('end_time', None)))
+        add_event(document['serial_number'], WarningMessage(document['warning_type'], document['warning_time'], document['start_time'], document.get('end_time', None), document.get('prev_time', None)))
     last_warning_check = warning_check
     # Wait before checking again
     seconds = seconds_until_next_email()

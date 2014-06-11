@@ -87,6 +87,7 @@ class TCPResolver(Protocol):
         self._mongoids = []
         self.firstfilepath = None
         self.serialNum = None
+        self.latestRecord = None
         
     def dataReceived(self, data):
         self.have += data
@@ -232,21 +233,48 @@ class TCPResolver(Protocol):
             
     def _check_duplicates(self, sorted_struct_list):
         # Check if the structs have duplicates or missing items, print warnings and update Mongo if so
+        if not sorted_struct_list:
+            return
         dates = tuple(datetime.datetime(*s.sync_data.times) for s in sorted_struct_list)
+        if self.latestRecord is None:
+            self.latestRecord = sorted_struct_list[-1]
+        else: # Special handling for the first record
+            date1 = datetime.datetime(*self.latestRecord.sync_data.times)
+            date2 = dates[0]
+            if date1 > date2:
+                if dates[-1] < date1:
+                    num_records = len(sorted_struct_list)
+                else:
+                    # Use binary search to find the index where everything below it is before the previous latest date
+                    num_records = binsearch(dates, date1)
+                    while dates[num_records] <= date1: # in case there are duplicates on the border
+                        num_records += 1
+                    self.latestRecord = sorted_struct_list[-1]
+                d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'misplaced', 'warning_time': datetime.datetime.utcnow(), 'start_time': date2, 'end_time': dates[num_records - 1], 'prev_time': date1})
+                d.addErrback(print_mongo_error, 'warning')
+                print 'WARNING: misplaced record(s) could not be corrected due to CSV file boundary (previous CSV file ends with record at {0}; next CSV file contains records from {1} to {2})'.format(date1, date2, dates[num_records - 1])
+            else:
+                self._check_sorted_gaps(date1, date2)
+                self.latestRecord = sorted_struct_list[-1]
         i = 1
         while i < len(dates):
             date1 = dates[i-1]
             date2 = dates[i]
-            delta = int((date2 - date1).total_seconds() + 0.5) # round difference to nearest second
-            if delta == 0:
-                d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'duplicate', 'warning_time': datetime.datetime.utcnow(), 'start_time': date2})
-                d.addErrback(print_mongo_error, 'warning')
-                print 'WARNING: duplicate record for {0}'.format(str(date2))
-            elif delta != 1:
-                d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'missing', 'warning_time': datetime.datetime.utcnow(), 'start_time': date1, 'end_time': date2})
-                d.addErrback(print_mongo_error, 'warning')
-                print 'WARNING: missing record(s) (skips from {0} to {1})'.format(str(date1), str(date2))
+            self._check_sorted_gaps(date1, date2)
             i += 1
+            
+    def _check_sorted_gaps(self, date1, date2):
+        """ Checks if date1 and date2 are sequential, assuming date1 <= date2.
+        If not, prints an error message and updates Mongo as appropriate. """
+        delta = int((date2 - date1).total_seconds() + 0.5) # round difference to nearest second
+        if delta == 0:
+            d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'duplicate', 'warning_time': datetime.datetime.utcnow(), 'start_time': date2})
+            d.addErrback(print_mongo_error, 'warning')
+            print 'WARNING: duplicate record for {0}'.format(date2)
+        elif delta != 1:
+            d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'missing', 'warning_time': datetime.datetime.utcnow(), 'start_time': date1, 'end_time': date2})
+            d.addErrback(print_mongo_error, 'warning')
+            print 'WARNING: missing record(s) (skips from {0} to {1})'.format(date1, date2)
             
 def print_mongo_error(err, task):
     print 'WARNING: could not update Mongo Database with recent {0}'.format(task)
