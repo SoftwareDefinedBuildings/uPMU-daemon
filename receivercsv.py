@@ -247,8 +247,9 @@ class TCPResolver(Protocol):
                 else:
                     # Use binary search to find the index where everything below it is before the previous latest date
                     num_records = binsearch(dates, date1)
-                    while dates[num_records] <= date1: # in case there are duplicates on the border
-                        num_records += 1
+                    if dates[num_records] < date1:
+                        num_records += 1 # So we're at the index of the first "correct" date
+                    self._check_sorted_gaps(date1, dates[num_records]) # Make sure it doesn't duplicate the last record in the previous CSV
                     self.latestRecord = sorted_struct_list[-1]
                 d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'misplaced', 'warning_time': datetime.datetime.utcnow(), 'start_time': date2, 'end_time': dates[num_records - 1], 'prev_time': date1})
                 d.addErrback(print_mongo_error, 'warning')

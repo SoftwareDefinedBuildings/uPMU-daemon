@@ -300,7 +300,6 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
                 return -1;
             }
             strcpy(fullpath, dirpath);
-            strcat(fullpath, "/");
             strcat(fullpath, subdir->d_name);
             if (stat(fullpath, &pathStats) != 0)
             {
@@ -336,7 +335,6 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
                 return -1;
             }
             strcpy(fullpath, dirpath);
-            strcat(fullpath, "/");
             strcat(fullpath, subdir->d_name);
             if (stat(fullpath, &pathStats) != 0)
             {
@@ -600,7 +598,6 @@ int main(int argc, char* argv[])
                             continue;
                         printf("Checking out appeared file\n");
                         strcpy(fullname, children[i].path);
-                        strcat(fullname, "/");
                         strcat(fullname, dir->d_name);
                         if (send_until_success(&socket_des, fullname) == 1)
                         {
