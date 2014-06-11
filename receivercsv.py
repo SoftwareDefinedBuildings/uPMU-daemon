@@ -31,7 +31,7 @@ mongoids = [] # Stores ids of mongo documents
 # Parse command line arguments
 parser = argparse.ArgumentParser()
 parser.add_argument('-s', '--seconds', help='the number of seconds per output csv file', type=int, default=900)
-parser.add_argument('-d', '--depth', help='the depth of the files in the directory structure being sent (top level is at depth 1)', type=int, default=5)
+parser.add_argument('-d', '--depth', help='the depth of the files in the directory structure being sent (top level is at depth 0)', type=int, default=4)
 parser.add_argument('-o', '--output', help='the directory in which to store the csv files', default='output/')
 parser.add_argument('-p', '--port', help='the port at which to accept incoming messages', type=int, default=1883)
 args = parser.parse_args()
@@ -201,10 +201,10 @@ class TCPResolver(Protocol):
             firstTime = time_to_str(parsedcopy[0].sync_data.times)
             lastTime = time_to_str(parsedcopy[-1].sync_data.times)
             dirtowrite = '{0}{1}/'.format(OUTPUTDIR, aliases.get(self.serialNum, self.serialNum))
-            subdirs = filepath.rsplit('/', DIRDEPTH)
+            subdirs = filepath.rsplit('/', DIRDEPTH + 1)
             if subdirs[-1].endswith('.dat'):
                 subdirs[-1] = subdirs[-1][:-4]
-            if len(subdirs) <= DIRDEPTH:
+            if len(subdirs) <= DIRDEPTH + 1:
                 print 'WARNING: filepath {0} has insufficient depth'.format(filepath)
             dirtowrite += '/'.join(subdirs[1:-1])
             if not os.path.exists(dirtowrite):

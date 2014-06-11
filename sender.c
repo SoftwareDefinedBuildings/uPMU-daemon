@@ -61,11 +61,7 @@ uint32_t sendid = 1;
 void remove_dir(const char* dirpath)
 {
     errno = 0;
-    if (rmdir(dirpath) == 0)
-    {
-        printf("Successfully removed directory %s\n", dirpath);
-    }
-    else
+    if (rmdir(dirpath) != 0)
     {
         if (errno == ENOTEMPTY || errno == EEXIST)
         {
@@ -106,6 +102,7 @@ void safe_exit(int arg)
  */
 int make_socket()
 {
+    printf("Attempting to connect...\n");
     int socket_descriptor = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (socket_descriptor < 0)
     {
@@ -118,6 +115,7 @@ int make_socket()
         close(socket_descriptor);
         return -1;
     }
+    printf("Successfully connected\n");
     return socket_descriptor;
 }
 
@@ -133,14 +131,12 @@ int make_socket()
  * Returns -1 if the file was read properly but could not be sent.
  */
 int send_file(int socket_descriptor, const char* filepath)
-{
-    printf("Sending file %s\n", filepath);
-    
+{    
     // Ignore files that are not .dat
     const char* substr = filepath + strlen(filepath) - 4;
     if (strcmp(substr, ".dat") != 0)
     {
-        printf("Skipping over file that is not \".dat\"\n");
+        printf("Skipping file %s (not \".dat\")\n", filepath);
         return 0;
     }
 
@@ -177,7 +173,7 @@ int send_file(int socket_descriptor, const char* filepath)
     int32_t dataread = fread(datastart, 1, length, input);
     fclose(input);
     if (dataread != length) {
-        printf("Error: could not finish reading file (read %d out of %d bytes)\n", dataread, length);
+        printf("Error: could not finish reading file %s (read %d out of %d bytes)\n", filepath, dataread, length);
         return 1;
     }
     
@@ -211,7 +207,7 @@ int send_file(int socket_descriptor, const char* filepath)
         }
         else if (dataread == 0)
         {
-            printf("Connection was closed before confirmation was received\n");
+            printf("Connection was closed before confirmation was received for %s\n", filepath);
             return -1;
         }
         dataleft -= dataread;
@@ -223,11 +219,10 @@ int send_file(int socket_descriptor, const char* filepath)
     }
     else
     {
-        printf("Received confirmation, deleting file\n");
         // Delete the file
         if (unlink(filepath) != 0)
         {
-            printf("Could not delete %s\n", filepath);
+            printf("File %s was successfully sent and confirmation was received, but could not be deleted\n", filepath);
         }
     }
     if (sendid == 0xFFFFFFFFu)
@@ -254,7 +249,7 @@ int send_until_success(int* socket_descriptor, const char* filepath)
             connected = 0;
         }
         sleep(TIMEDELAY);
-        printf("Attempting to reconnect...\n");
+        printf("Connection appears to be lost\n");
         *socket_descriptor = make_socket();
     }
     connected = 1;
@@ -473,16 +468,13 @@ int main(int argc, char* argv[])
     }
     server_addr = (struct sockaddr*) &server;
     connected = 0;
-    printf("Attempting to connect...\n");
     socket_des = make_socket();
     while (socket_des == -1)
     {
         sleep(TIMEDELAY);
-        printf("Attempting to connect...\n");
         socket_des = make_socket();
     }
     connected = 1;
-    printf("Connection successful\n");
     
     // Look for file/directory additions
     int fd = inotify_init();
@@ -543,7 +535,6 @@ int main(int argc, char* argv[])
                 /* Check for a new directory */
                 if ((IN_CREATE & ev->mask) && (IN_ISDIR & ev->mask))
                 {
-                    printf("new directory noticed\n");
                     // Find the correct depth, store it in i
                     for (i = MAXDEPTH; i >= 0; i--)
                     {
@@ -565,7 +556,7 @@ int main(int argc, char* argv[])
                     if (strcmp(fullname, children[i].path) != 0) // check if we're already watching this (in case it was detected twice); if not, don't proceed
                     {
                         // remove watches from depth i and deeper and delete directories if possible
-                        printf("Found new directory %s at depth %d\n", children[i].path, i);
+                        printf("Found new directory %s (depth %d)\n", fullname, i);
                         for (j = MAXDEPTH; j >= i; j--)
                         {
                             if (children[j].fd != -1) // if it has already been deleted or there's no watch, don't do anything
@@ -583,19 +574,18 @@ int main(int argc, char* argv[])
                         }
                         
                         strcpy(children[i].path, fullname);
-                        printf("New path: %s\n", fullname);
                         children[i].fd = inotify_add_watch(fd, children[i].path, IN_CREATE | IN_CLOSE_WRITE);
                         
                         // Ok great, but we may have missed some files, so let's check for them:
+                        printf("Processing existing files in %s\n", fullname);
                         if (processdir(fullname, &socket_des, fd, i + 1, 1) < 0)
                         {
-                            printf("Processing existing files in %s\n", fullname);
                             printf("WARNING: could not process existing files in newly created directory %s", fullname);
                         }
                     }
                     else
                     {
-                        printf("Directory already found\n");
+                        printf("Directory %s already found\n", fullname);
                     }
                 }
                 /* Check for a new file */
@@ -603,14 +593,13 @@ int main(int argc, char* argv[])
                 {
                     if (children[MAXDEPTH].fd == ev->wd)
                     {
-                        char fullname[FULLPATHLEN];
                         strcpy(fullname, children[MAXDEPTH].path);
                         strcat(fullname, ev->name);
                         result = send_until_success(&socket_des, fullname);
                     }
                     else
                     {
-                        printf("Warning: file %s appeared outside hour directory\n", ev->name);
+                        printf("Warning: file %s appeared outside hour directory (not sent)\n", ev->name);
                     }
                 }
                 if (result == 1)
