@@ -278,45 +278,19 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
     }
     struct dirent* subdir;
     struct stat pathStats;
-    off_t start_position = telldir(rootdir);
-    int numsubdirs = 0;
-    int numfiles = 0;
-    // Count the number of files and subdirectories in the dirpath
     int pathlen;
     char fullpath[FULLPATHLEN];
-    while ((subdir = readdir(rootdir)) != NULL)
-    {
-        if (strcmp(subdir->d_name, ".") != 0 && strcmp(subdir->d_name, "..") != 0)
-        {
-            pathlen = strlen(dirpath) + strlen(subdir->d_name) + 1;
-            if (pathlen > FULLPATHLEN)
-            {
-                printf("Path length of %d found; max path length is %d\n", pathlen, FULLPATHLEN);
-                return -1;
-            }
-            strcpy(fullpath, dirpath);
-            strcat(fullpath, subdir->d_name);
-            if (stat(fullpath, &pathStats) != 0)
-            {
-                printf("Could not read file %s\n", fullpath);
-                return -1;
-            }
-            if (S_ISDIR(pathStats.st_mode))
-            {
-                numsubdirs++;
-            }
-            else if (S_ISREG(pathStats.st_mode))
-            {
-                numfiles++;
-            }
-        }
-    }
-    
-    seekdir(rootdir, start_position);
+    int numsubdirs = 1; // Length of array in FILENAMELEN units
+    int numfiles = 1; // Length of array in FILENAMELEN units
     char* filearr = malloc(numfiles * FILENAMELEN);
-    unsigned int fileIndex = 0;
+    unsigned int fileIndex = 0; // The number of strings actually in the array
     char* subdirarr = malloc(numsubdirs * FILENAMELEN);
-    unsigned int subdirIndex = 0;
+    unsigned int subdirIndex = 0; // The number of strings actually in the array
+    if (filearr == NULL || subdirarr == NULL)
+    {
+        printf("Not enough memory to store filenames or subdirectories to sort.\n");
+        safe_exit(1);
+    }
     // Add watch for root directory
     // Add files and directories to arrays
     while ((subdir = readdir(rootdir)) != NULL)
@@ -346,6 +320,16 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
                 strcpy(subdirarr + (subdirIndex * FILENAMELEN), subdir->d_name);
                 strcat(subdirarr + (subdirIndex * FILENAMELEN), "/");
                 subdirIndex++;
+                if (subdirIndex == numsubdirs)
+                {
+                    numsubdirs *= 2;
+                    subdirarr = realloc(subdirarr, numsubdirs * FILENAMELEN);
+                    if (subdirarr == NULL)
+                    {
+                        printf("Could not allocate memory to store subdirectory names to sort.\n");
+                        safe_exit(1);
+                    }
+                }
             }
             else if (S_ISREG(pathStats.st_mode))
             {
@@ -356,16 +340,24 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
                 }
                 strcpy(filearr + (fileIndex * FILENAMELEN), subdir->d_name);
                 fileIndex++;
+                if (fileIndex == numfiles)
+                {
+                    numfiles *= 2;
+                    filearr = realloc(filearr, numfiles * FILENAMELEN);
+                    if (filearr == NULL)
+                    {
+                        printf("Could not allocate memory to store filenames to sort.\n");
+                        safe_exit(1);
+                    }
+                }
             }
         }
-    }
-    if (fileIndex != numfiles || subdirIndex != numsubdirs)
-    {
-        printf("Error: inconsistent file count in root directory (possibly because files were added while counting)\n");
-        return -1;
-    }
-    
+    }    
     closedir(rootdir);
+    
+    numfiles = fileIndex; // The actual number of files (so fileIndex can be changed)
+    numsubdirs = subdirIndex; // The actual number of files (so subdirIndex can be changed)
+    
     // Sort files and subdirectories in numerical order
     qsort(filearr, numfiles, FILENAMELEN, file_entry_comparator);
     qsort(subdirarr, numsubdirs, FILENAMELEN, file_entry_comparator);
