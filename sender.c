@@ -280,8 +280,8 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
     struct stat pathStats;
     int pathlen;
     char fullpath[FULLPATHLEN];
-    int numsubdirs = 1; // Length of array in FILENAMELEN units
-    int numfiles = 1; // Length of array in FILENAMELEN units
+    int numsubdirs = 8; // Length of array in FILENAMELEN units
+    int numfiles = 8; // Length of array in FILENAMELEN units
     char* filearr = malloc(numfiles * FILENAMELEN);
     unsigned int fileIndex = 0; // The number of strings actually in the array
     char* subdirarr = malloc(numsubdirs * FILENAMELEN);
