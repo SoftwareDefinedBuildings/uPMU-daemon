@@ -130,7 +130,7 @@ class WarningMessage(EventMessage):
         if self.description == 'duplicate':
             return 'WARNING: duplicate record for {0} (message generated at {1})'.format(self.start_time, self.event_time)
         elif self.description == 'missing':
-            return 'WARNING: missing record(s): data skips from {0} to {1} (message generated at {2})'.format(self.start_time, self.end_time, self.event_time)
+            return 'WARNING: missing record(s): no data from {0} to {1} (message generated at {2})'.format(self.start_time, self.end_time, self.event_time)
         elif self.description == 'misplaced':
             return 'WARNING: misplaced records(s) left uncorrected due to CSV boundary: new CSV file contains records from {0} to {1}, but would normally start at {2} (message generated at {3})'.format(self.start_time, self.end_time, self.prev_time, self.event_time)
 

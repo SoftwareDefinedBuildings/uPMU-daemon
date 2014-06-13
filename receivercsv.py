@@ -13,6 +13,7 @@ import threading
 import traceback
 import txmongo
 
+from math import floor
 from parser import sync_output, parse_sync_output
 from sys import argv
 from twisted.internet import reactor, defer
@@ -136,14 +137,15 @@ class TCPResolver(Protocol):
             else:
                 return
         # if we've reached this point, we have all the data
-        print 'Received', self.filepath
+        print 'Received {0}, serial number is {1}'.format(self.filepath, self.serialNum), '({0})'.format(aliases.get(self.serialNum, 'alias not known'))
         self._processdata()
         self._setup()
             
     def connectionLost(self, reason):
         print 'Connection lost:', self.transport.getPeer()
         print 'Writing pending data...'
-        self._writecsv()
+        while self._parsed:
+            self._writecsv()
         print 'Finished writing pending data'
         
     def connectionMade(self):
@@ -182,8 +184,12 @@ class TCPResolver(Protocol):
         parseddata[-1].mongoid = mongoid
         self._parsed.extend(parseddata)
         self.transport.write(self.sendid)
-        print datetime.datetime(*parseddata[-1].sync_data.times), self.cycleTime
-        if (datetime.datetime(*parseddata[-1].sync_data.times) - self.cycleTime).total_seconds() >= NUM_SECONDS_PER_FILE:
+        latest_time = parseddata[0].sync_data.times
+        for parsed in parseddata:
+            if parsed.sync_data.times > latest_time:
+                latest_time = parsed.sync_data.times
+        latest_time = datetime.datetime(*latest_time)
+        while (latest_time - self.cycleTime).total_seconds() >= NUM_SECONDS_PER_FILE:
             try:
                 self._writecsv()
             except BaseException as be:
@@ -193,18 +199,21 @@ class TCPResolver(Protocol):
     def _writecsv(self):
         """ Attempts to write data in self._parsed to CSV file. Upon success, updates the mongo
         database to indicate that their data have been published and returns True. Upon failure,
-        returns False. """
+        returns False. If a cycle has been skipped, moves to the next cycle and does nothing."""
         success = True
         if not self._parsed:
             return
-        print 'Something'
         self._parsed.sort(key=lambda x: x.sync_data.times)
         nextCycleTime = self.cycleTime + datetime.timedelta(0, NUM_SECONDS_PER_FILE)
-        i = len(self._parsed) - 1
-        while datetime.datetime(*self._parsed[i].sync_data.times) >= nextCycleTime and i >= 0:
+        dates = tuple(datetime.datetime(*s.sync_data.times) for s in self._parsed)
+        i = binsearch(dates, nextCycleTime)
+        while dates[i] >= nextCycleTime and i >= 0:
             i -= 1
         i += 1
         if i == 0:
+            d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'missing', 'warning_time': datetime.datetime.utcnow(), 'start_time': self.cycleTime, 'end_time': '{0} (no CSV file written)'.format(nextCycleTime - datetime.timedelta(0, 1))})
+            d.addErrback(print_mongo_error, 'warning')
+            print 'WARNING: missing record(s) (no data from {0} to {1}, no CSV file written)'.format(self.cycleTime, nextCycleTime - datetime.timedelta(0, 1))
             self.cycleTime = nextCycleTime
             return
         parsedcopy = self._parsed[:i]
@@ -213,7 +222,7 @@ class TCPResolver(Protocol):
         self.firstfilepath = None
         try:
             parsedcopy.sort(key=lambda x: x.sync_data.times)
-            self._check_duplicates(parsedcopy)
+            self._check_duplicates(dates[:i], nextCycleTime)
             firstTime = time_to_str(parsedcopy[0].sync_data.times)
             lastTime = time_to_str(parsedcopy[-1].sync_data.times)
             dirtowrite = '{0}{1}/'.format(OUTPUTDIR, aliases.get(self.serialNum, self.serialNum))
@@ -225,12 +234,11 @@ class TCPResolver(Protocol):
             dirtowrite += '/'.join(subdirs[1:-1])
             if not os.path.exists(dirtowrite):
                 os.makedirs(dirtowrite)
-            filename = '{0}/{1}__{2}__{3}.csv'.format(dirtowrite, self.serialNum, firstTime, lastTime)
-            print 'Writing file {0}'.format(filename)
+            filename = '{0}/{1}__{2}__{3}.csv'.format(dirtowrite, self.serialNum, self.cycleTime, nextCycleTime - datetime.timedelta(0, 1))
             with open(filename, 'wb') as f:
                 writer = csv.writer(f)
                 writer.writerow(firstrow)
-                early, normal, duplicate = self._lst_to_rows(parsedcopy, nextCycleTime)
+                early, normal, duplicate = self._lst_to_rows(parsedcopy)
                 writer.writerows(normal)
                 writer.writerow([])
                 if duplicate:
@@ -240,6 +248,7 @@ class TCPResolver(Protocol):
                 if early:
                     writer.writerow(['Misplaced records (should be in earlier CSV file):'])
                     writer.writerows(early)
+            print 'Successfully wrote file', filename
         except KeyboardInterrupt:
             success = False
         except BaseException as be:
@@ -258,18 +267,19 @@ class TCPResolver(Protocol):
                 return True
             return False
             
-    def _lst_to_rows(self, parsed, nextCycleTime):
+    def _lst_to_rows(self, parsed):
         earlyRecords = []
         rows = [[] for _ in xrange(120 * NUM_SECONDS_PER_FILE)]
         duplicates = []
         for s in parsed:
-            basetime = time_to_nanos(s.sync_data.times)
+            stime = datetime.datetime(*s.sync_data.times)
+            basetime = time_to_nanos(stime)
             early = False
             duplicate = False
-            j = int((datetime.datetime(*s.sync_data.times) - self.cycleTime).total_seconds() + 0.5)
+            j = int(floor((stime - self.cycleTime).total_seconds() + 0.5)) # Floor it first because it might be negative
             if j < 0:
                 early = True
-            if rows[120 * j]:
+            elif rows[120 * j]:
                 duplicate = True
             # it seems s.sync_data.sampleRate is the number of milliseconds between samples
             timedelta = 1000000 * s.sync_data.sampleRate # nanoseconds between samples
@@ -292,11 +302,11 @@ class TCPResolver(Protocol):
                     rows[(120 * j) + i] = row
         return earlyRecords, rows, duplicates
             
-    def _check_duplicates(self, sorted_struct_list):
+    def _check_duplicates(self, dates, nextCycleTime):
+        # DATES is assumed to be in sorted order
         # Check if the structs have duplicates or missing items, print warnings and update Mongo if so
-        if not sorted_struct_list:
+        if not dates:
             return
-        dates = tuple(datetime.datetime(*s.sync_data.times) for s in sorted_struct_list)
         i = binsearch(dates, self.cycleTime)
         while i >= 0 and dates[i] >= self.cycleTime:
             i -= 1
@@ -305,12 +315,24 @@ class TCPResolver(Protocol):
             d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'misplaced', 'warning_time': datetime.datetime.utcnow(), 'start_time': dates[0], 'end_time': dates[i - 1], 'prev_time': self.cycleTime})
             d.addErrback(print_mongo_error, 'warning')
             print 'WARNING: misplaced record(s) could not be corrected due to CSV file boundary (CSV file contains records from {0} to {1}, but would normally start at {2})'.format(dates[0], dates[i-1], self.cycleTime)
-        i = 1
-        while i < len(dates):
-            date1 = dates[i-1]
-            date2 = dates[i]
-            self._check_sorted_gaps(date1, date2)
-            i += 1
+        # Check for a gap at the beginning of the CSV
+        if dates[i] > self.cycleTime:
+            d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'missing', 'warning_time': datetime.datetime.utcnow(), 'start_time': '{0} (start of CSV file)'.format(self.cycleTime), 'end_time': dates[i] - datetime.timedelta(0, 1)})
+            d.addErrback(print_mongo_error, 'warning')
+            print 'WARNING: missing record(s) (no data from {0} to {1})'.format(self.cycleTime, dates[i] - datetime.timedelta(0, 1))
+        # Check for a gap at the end of the CSV
+        lastTime = nextCycleTime - datetime.timedelta(0, 1)
+        if dates[-1] < lastTime:
+            d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'missing', 'warning_time': datetime.datetime.utcnow(), 'start_time': dates[-1] + datetime.timedelta(0, 1), 'end_time': '{0} (end of CSV file)'.format(lastTime)})
+            d.addErrback(print_mongo_error, 'warning')
+            print 'WARNING: missing record(s) (no data from {0} to {1})'.format(dates[-1] + datetime.timedelta(0, 1), lastTime)
+        j = 1
+        while j < len(dates):
+            if j == i:
+                j += 1
+                continue # don't check for gap between last misplaced record and first good record
+            self._check_sorted_gaps(dates[j-1], dates[j])
+            j += 1
             
     def _check_sorted_gaps(self, date1, date2):
         """ Checks if date1 and date2 are sequential, assuming date1 <= date2.
@@ -321,9 +343,9 @@ class TCPResolver(Protocol):
             d.addErrback(print_mongo_error, 'warning')
             print 'WARNING: duplicate record for {0}'.format(date2)
         elif delta != 1:
-            d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'missing', 'warning_time': datetime.datetime.utcnow(), 'start_time': date1, 'end_time': date2})
+            d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'missing', 'warning_time': datetime.datetime.utcnow(), 'start_time': date1 + datetime.timedelta(0, 1), 'end_time': date2 - datetime.timedelta(0, 1)})
             d.addErrback(print_mongo_error, 'warning')
-            print 'WARNING: missing record(s) (skips from {0} to {1})'.format(date1, date2)
+            print 'WARNING: missing record(s) (no data from {0} to {1})'.format(date1 + datetime.timedelta(0, 1), date2 - datetime.timedelta(0, 1))
             
 def print_mongo_error(err, task):
     print 'WARNING: could not update Mongo Database with recent {0}'.format(task)
