@@ -45,6 +45,10 @@ if args.output[-1] != '/':
     OUTPUTDIR += '/'
 
 ADDRESSP = args.port
+
+currtime = datetime.datetime.utcnow()
+
+BASETIME = datetime.datetime(currtime.year, currtime.month, currtime.day, currtime.hour) # To start the CSV cycle
     
 # Mongo DB collections (will be set later)
 received_files = None
@@ -84,10 +88,10 @@ def parse(string):
 class TCPResolver(Protocol):
     def __init__(self):
         self._parsed = []
-        self._mongoids = []
         self.firstfilepath = None
         self.serialNum = None
         self.latestRecord = None
+        self.cycleTime = None # The time at which this cycle starts
         
     def dataReceived(self, data):
         self.have += data
@@ -160,6 +164,9 @@ class TCPResolver(Protocol):
         if self.firstfilepath is None:
             self.firstfilepath = self.filepath # the first filepath for the N sec. interval
         parseddata = parse(self.data)
+        if self.cycleTime is None:
+            secsFromBase = (datetime.datetime(*parseddata[0].sync_data.times) - BASETIME).total_seconds()
+            self.cycleTime = BASETIME + datetime.timedelta(0, secsFromBase - (secsFromBase % NUM_SECONDS_PER_FILE))
         received_file = {'name': self.filepath,
                          'data': Binary(self.data),
                          'published': False,
@@ -172,10 +179,11 @@ class TCPResolver(Protocol):
         mongoiddeferred.addErrback(databaseerror, self.transport)
         
     def _finishprocessing(self, mongoid, parseddata):
+        parseddata[-1].mongoid = mongoid
         self._parsed.extend(parseddata)
-        self._mongoids.append(mongoid)
         self.transport.write(self.sendid)
-        if len(self._parsed) >= NUM_SECONDS_PER_FILE:
+        print datetime.datetime(*parseddata[-1].sync_data.times), self.cycleTime
+        if (datetime.datetime(*parseddata[-1].sync_data.times) - self.cycleTime).total_seconds() >= NUM_SECONDS_PER_FILE:
             try:
                 self._writecsv()
             except BaseException as be:
@@ -189,10 +197,18 @@ class TCPResolver(Protocol):
         success = True
         if not self._parsed:
             return
-        parsedcopy = self._parsed
-        self._parsed = []
-        mongoidscopy = self._mongoids
-        self._mongoids = []
+        print 'Something'
+        self._parsed.sort(key=lambda x: x.sync_data.times)
+        nextCycleTime = self.cycleTime + datetime.timedelta(0, NUM_SECONDS_PER_FILE)
+        i = len(self._parsed) - 1
+        while datetime.datetime(*self._parsed[i].sync_data.times) >= nextCycleTime and i >= 0:
+            i -= 1
+        i += 1
+        if i == 0:
+            self.cycleTime = nextCycleTime
+            return
+        parsedcopy = self._parsed[:i]
+        self._parsed = self._parsed[i:]
         filepath = self.firstfilepath
         self.firstfilepath = None
         try:
@@ -214,7 +230,16 @@ class TCPResolver(Protocol):
             with open(filename, 'wb') as f:
                 writer = csv.writer(f)
                 writer.writerow(firstrow)
-                writer.writerows(lst_to_rows(parsedcopy))
+                early, normal, duplicate = self._lst_to_rows(parsedcopy, nextCycleTime)
+                writer.writerows(normal)
+                writer.writerow([])
+                if duplicate:
+                    writer.writerow(['Duplicate records (entries for same times exist in this CSV file):'])
+                    writer.writerows(duplicate)
+                    writer.writerow([])
+                if early:
+                    writer.writerow(['Misplaced records (should be in earlier CSV file):'])
+                    writer.writerows(early)
         except KeyboardInterrupt:
             success = False
         except BaseException as be:
@@ -224,39 +249,62 @@ class TCPResolver(Protocol):
             print 'Traceback:'
             traceback.print_exc()
         finally:
+            self.cycleTime = nextCycleTime
             if success:
-                for mongoid in mongoidscopy:
-                    d = received_files.update({'_id': mongoid}, {'$set': {'published': True}})
-                    d.addErrback(print_mongo_error, 'write')
+                for struct in parsedcopy:
+                    if struct.mongoid is not None:
+                        d = received_files.update({'_id': struct.mongoid}, {'$set': {'published': True}})
+                        d.addErrback(print_mongo_error, 'write')
                 return True
             return False
+            
+    def _lst_to_rows(self, parsed, nextCycleTime):
+        earlyRecords = []
+        rows = [[] for _ in xrange(120 * NUM_SECONDS_PER_FILE)]
+        duplicates = []
+        for s in parsed:
+            basetime = time_to_nanos(s.sync_data.times)
+            early = False
+            duplicate = False
+            j = int((datetime.datetime(*s.sync_data.times) - self.cycleTime).total_seconds() + 0.5)
+            if j < 0:
+                early = True
+            if rows[120 * j]:
+                duplicate = True
+            # it seems s.sync_data.sampleRate is the number of milliseconds between samples
+            timedelta = 1000000 * s.sync_data.sampleRate # nanoseconds between samples
+            for i in xrange(120):
+                row = []
+                row.append(basetime + int((i * timedelta) + 0.5))
+                row.append(s.sync_data.lockstate[i])
+                for start in ('L', 'C'):
+                    for num in xrange(1, 4):
+                        attribute = getattr(s.sync_data, '{0}{1}MagAng'.format(start, num))
+                        row.append(attribute[i].angle)
+                        row.append(attribute[i].mag)
+                row.append(s.gps_stats.satellites)
+                row.append(s.gps_stats.hasFix)
+                if early:
+                    earlyRecords.append(row)
+                elif duplicate:
+                    duplicates.append(row)
+                else:
+                    rows[(120 * j) + i] = row
+        return earlyRecords, rows, duplicates
             
     def _check_duplicates(self, sorted_struct_list):
         # Check if the structs have duplicates or missing items, print warnings and update Mongo if so
         if not sorted_struct_list:
             return
         dates = tuple(datetime.datetime(*s.sync_data.times) for s in sorted_struct_list)
-        if self.latestRecord is None:
-            self.latestRecord = sorted_struct_list[-1]
-        else: # Special handling for the first record
-            date1 = datetime.datetime(*self.latestRecord.sync_data.times)
-            date2 = dates[0]
-            if date1 > date2:
-                if dates[-1] < date1:
-                    num_records = len(sorted_struct_list)
-                else:
-                    # Use binary search to find the index where everything below it is before the previous latest date
-                    num_records = binsearch(dates, date1)
-                    if dates[num_records] < date1:
-                        num_records += 1 # So we're at the index of the first "correct" date
-                    self._check_sorted_gaps(date1, dates[num_records]) # Make sure it doesn't duplicate the last record in the previous CSV
-                    self.latestRecord = sorted_struct_list[-1]
-                d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'misplaced', 'warning_time': datetime.datetime.utcnow(), 'start_time': date2, 'end_time': dates[num_records - 1], 'prev_time': date1})
-                d.addErrback(print_mongo_error, 'warning')
-                print 'WARNING: misplaced record(s) could not be corrected due to CSV file boundary (previous CSV file ends with record at {0}; next CSV file contains records from {1} to {2})'.format(date1, date2, dates[num_records - 1])
-            else:
-                self._check_sorted_gaps(date1, date2)
-                self.latestRecord = sorted_struct_list[-1]
+        i = binsearch(dates, self.cycleTime)
+        while i >= 0 and dates[i] >= self.cycleTime:
+            i -= 1
+        i += 1
+        if i != 0:
+            d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'misplaced', 'warning_time': datetime.datetime.utcnow(), 'start_time': dates[0], 'end_time': dates[i - 1], 'prev_time': self.cycleTime})
+            d.addErrback(print_mongo_error, 'warning')
+            print 'WARNING: misplaced record(s) could not be corrected due to CSV file boundary (CSV file contains records from {0} to {1}, but would normally start at {2})'.format(dates[0], dates[i-1], self.cycleTime)
         i = 1
         while i < len(dates):
             date1 = dates[i-1]

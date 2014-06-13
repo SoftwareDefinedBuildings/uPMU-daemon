@@ -38,6 +38,7 @@ class sync_output(object):
         assert len(data) == 3, 'wrong number of fields (expected 3, got {0})'.format(len(data))
         assert [sync_output_msgq, sync_pll_stats_msgq, sync_gps_stats] == map(type, data), 'wrong types of arguments'
         self.sync_data, self.pll_stats, self.gps_stats = data
+        self.mongoid = None
         
 # Functions to parse strings into structs
 
