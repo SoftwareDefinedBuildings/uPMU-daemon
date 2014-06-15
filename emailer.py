@@ -79,7 +79,7 @@ This is an automated message. You should not reply to it."""
     txt = MIMEText(skeleton.format('\n'.join(lines)))
     del txt['Subject']
     if alert:
-        txt['Subject'] = 'ALERT: one or more uPMUs are inactive'.format(ALERTTIME)
+        txt['Subject'] = 'ALERT: one or more uPMUs are inactive'
     else:
         txt['Subject'] = 'Automated uPMU Notification'
     del txt['From']
