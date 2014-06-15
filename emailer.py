@@ -30,8 +30,8 @@ if len(sys.argv) < 3:
     print 'Usage: ./emailer.py <sender email address> <receiver email addresses>'
     exit()
     
-senderaddr = sys.argv[1]
-receiveradrs = sys.argv[2:]
+    
+alert = False # True if a uPMU has not send messages in ALERTTIME seconds
 
 aliases = {}
 
@@ -60,7 +60,7 @@ def seconds_until_next_email():
     return EMAILTIME - (datetime.datetime.utcnow() - last_email_time).total_seconds()
     
 def send_messages():
-    global last_email_time
+    global last_email_time, alert
     if len(events) == 0:
         return # nothing to send
     skeleton = """Hello,
@@ -78,7 +78,10 @@ This is an automated message. You should not reply to it."""
         lines.append('') # A blank line to separate serial numbers
     txt = MIMEText(skeleton.format('\n'.join(lines)))
     del txt['Subject']
-    txt['Subject'] = 'Automated uPMU Notification'
+    if alert:
+        txt['Subject'] = 'ALERT: one or more uPMUs are inactive'.format(ALERTTIME)
+    else:
+        txt['Subject'] = 'Automated uPMU Notification'
     del txt['From']
     txt['From'] = SENDERADDR
     del txt['To']
@@ -92,6 +95,7 @@ This is an automated message. You should not reply to it."""
         emailsender.quit()
         created = False
         print 'Successfully sent email'
+        alert = False
         for recipient in refused:
             print 'WARNING: recipient {0} was refused by the server and did not receive the email'.format(recipient)
     except smtplib.SMTPSenderRefused:
@@ -146,6 +150,7 @@ while True:
         elif serialNumber not in inactive_serials: # only add an event if hasn't been marked inactive it so we don't send too much spam
             inactive_serials.add(serialNumber)
             add_event(serialNumber, EventMessage('inactive', lastReceived))
+            alert = True
     warning_check = datetime.datetime.utcnow() # The time of this warning check
     for document in warnings.find({'warning_time': {'$gt': last_warning_check}}): # Check for warnings for missing/duplicate entries since the last time we checked
         add_event(document['serial_number'], WarningMessage(document['warning_type'], document['warning_time'], document['start_time'], document.get('end_time', None), document.get('prev_time', None)))
