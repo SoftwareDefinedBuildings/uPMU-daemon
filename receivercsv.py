@@ -13,6 +13,7 @@ import threading
 import traceback
 import txmongo
 
+
 from math import floor
 from parser import sync_output, parse_sync_output
 from sys import argv
@@ -55,6 +56,7 @@ BASETIME = datetime.datetime(currtime.year, currtime.month, currtime.day, currti
 received_files = None
 latest_time = None
 warnings = None
+warnings_summary = None
 
 # The first row of every csv file has lables
 firstrow = ['time', 'lockstate']
@@ -163,8 +165,8 @@ class TCPResolver(Protocol):
         self.data = None
         
     def _processdata(self):
-        if self.firstfilepath is None:
-            self.firstfilepath = self.filepath # the first filepath for the N sec. interval
+        if self.firstfilepath is None: # To handle the very first file received
+            self.firstfilepath = self.filepath
         parseddata = parse(self.data)
         if self.cycleTime is None:
             secsFromBase = (datetime.datetime(*parseddata[0].sync_data.times) - BASETIME).total_seconds()
@@ -211,18 +213,18 @@ class TCPResolver(Protocol):
             i -= 1
         i += 1
         if i == 0:
-            d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'missing', 'warning_time': datetime.datetime.utcnow(), 'start_time': self.cycleTime, 'end_time': '{0} (no CSV file written)'.format(nextCycleTime - datetime.timedelta(0, 1))})
-            d.addErrback(print_mongo_error, 'warning')
+            d = warnings_summary.insert({'serial_number': self.serialNum, 'time': datetime.datetime.utcnow(), 'csv_start': self.cycleTime, 'next_csv_start': nextCycleTime, 'num_warnings': 1, 'written': False})
+            d.addErrback(print_mongo_error, 'warning summary')
             print 'WARNING: missing record(s) (no data from {0} to {1}, no CSV file written)'.format(self.cycleTime, nextCycleTime - datetime.timedelta(0, 1))
             self.cycleTime = nextCycleTime
             return
         parsedcopy = self._parsed[:i]
         self._parsed = self._parsed[i:]
         filepath = self.firstfilepath
-        self.firstfilepath = None
+        self.firstfilepath = self.filepath # We've received the next CSV already.
         try:
             parsedcopy.sort(key=lambda x: x.sync_data.times)
-            self._check_duplicates(dates[:i], nextCycleTime)
+            num_warnings = self._check_duplicates(dates[:i], nextCycleTime)
             firstTime = time_to_str(parsedcopy[0].sync_data.times)
             lastTime = time_to_str(parsedcopy[-1].sync_data.times)
             dirtowrite = '{0}{1}/'.format(OUTPUTDIR, aliases.get(self.serialNum, self.serialNum))
@@ -249,6 +251,8 @@ class TCPResolver(Protocol):
                     writer.writerow(['Misplaced records (should be in earlier CSV file):'])
                     writer.writerows(early)
             print 'Successfully wrote file', filename
+            d = warnings_summary.insert({'serial_number': self.serialNum, 'time': datetime.datetime.utcnow(), 'csv_start': self.cycleTime, 'next_csv_start': nextCycleTime, 'num_warnings': num_warnings, 'written': True})
+            d.addErrback(print_mongo_error, 'warning summary')
         except KeyboardInterrupt:
             success = False
         except BaseException as be:
@@ -303,10 +307,13 @@ class TCPResolver(Protocol):
         return earlyRecords, rows, duplicates
             
     def _check_duplicates(self, dates, nextCycleTime):
+        """ Returns the total number of duplicates/missing/misplaced records found, and adds warnings to
+        Mongo DB as necessary. """
         # DATES is assumed to be in sorted order
         # Check if the structs have duplicates or missing items, print warnings and update Mongo if so
         if not dates:
-            return
+            return 0
+        num_records = 0
         i = binsearch(dates, self.cycleTime)
         while i >= 0 and dates[i] >= self.cycleTime:
             i -= 1
@@ -315,37 +322,46 @@ class TCPResolver(Protocol):
             d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'misplaced', 'warning_time': datetime.datetime.utcnow(), 'start_time': dates[0], 'end_time': dates[i - 1], 'prev_time': self.cycleTime})
             d.addErrback(print_mongo_error, 'warning')
             print 'WARNING: misplaced record(s) could not be corrected due to CSV file boundary (CSV file contains records from {0} to {1}, but would normally start at {2})'.format(dates[0], dates[i-1], self.cycleTime)
+            num_records = i
         # Check for a gap at the beginning of the CSV
         if dates[i] > self.cycleTime:
-            d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'missing', 'warning_time': datetime.datetime.utcnow(), 'start_time': '{0} (start of CSV file)'.format(self.cycleTime), 'end_time': dates[i] - datetime.timedelta(0, 1)})
+            d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'missing', 'warning_time': datetime.datetime.utcnow(), 'start_time': self.cycleTime, 'end_time': dates[i] - datetime.timedelta(0, 1)})
             d.addErrback(print_mongo_error, 'warning')
             print 'WARNING: missing record(s) (no data from {0} to {1})'.format(self.cycleTime, dates[i] - datetime.timedelta(0, 1))
+            num_records += 1
         # Check for a gap at the end of the CSV
         lastTime = nextCycleTime - datetime.timedelta(0, 1)
         if dates[-1] < lastTime:
-            d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'missing', 'warning_time': datetime.datetime.utcnow(), 'start_time': dates[-1] + datetime.timedelta(0, 1), 'end_time': '{0} (end of CSV file)'.format(lastTime)})
+            d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'missing', 'warning_time': datetime.datetime.utcnow(), 'start_time': dates[-1] + datetime.timedelta(0, 1), 'end_time': lastTime})
             d.addErrback(print_mongo_error, 'warning')
             print 'WARNING: missing record(s) (no data from {0} to {1})'.format(dates[-1] + datetime.timedelta(0, 1), lastTime)
+            num_records += 1
         j = 1
         while j < len(dates):
             if j == i:
                 j += 1
                 continue # don't check for gap between last misplaced record and first good record
-            self._check_sorted_gaps(dates[j-1], dates[j])
+            num_records += self._check_sorted_gaps(dates[j-1], dates[j])
             j += 1
+        return num_records
             
     def _check_sorted_gaps(self, date1, date2):
         """ Checks if date1 and date2 are sequential, assuming date1 <= date2.
-        If not, prints an error message and updates Mongo as appropriate. """
+        If not, prints an error message and updates Mongo as appropriate.
+        Returns 1 if the dates are not sequential and 0 if they are. """
+        num_errors = 0
         delta = int((date2 - date1).total_seconds() + 0.5) # round difference to nearest second
         if delta == 0:
             d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'duplicate', 'warning_time': datetime.datetime.utcnow(), 'start_time': date2})
             d.addErrback(print_mongo_error, 'warning')
             print 'WARNING: duplicate record for {0}'.format(date2)
+            return 1
         elif delta != 1:
             d = warnings.insert({'serial_number': self.serialNum, 'warning_type': 'missing', 'warning_time': datetime.datetime.utcnow(), 'start_time': date1 + datetime.timedelta(0, 1), 'end_time': date2 - datetime.timedelta(0, 1)})
             d.addErrback(print_mongo_error, 'warning')
             print 'WARNING: missing record(s) (no data from {0} to {1})'.format(date1 + datetime.timedelta(0, 1), date2 - datetime.timedelta(0, 1))
+            return 1
+        return 0
             
 def print_mongo_error(err, task):
     print 'WARNING: could not update Mongo Database with recent {0}'.format(task)
@@ -364,10 +380,11 @@ class ResolverFactory(Factory):
         return TCPResolver()
 
 def setup(mconn):
-     global received_files, latest_time, warnings
+     global received_files, latest_time, warnings, warnings_summary
      received_files = mconn.upmu_database.received_files
      latest_time = mconn.upmu_database.latest_time
      warnings = mconn.upmu_database.warnings
+     warnings_summary = mconn.upmu_database.warnings_summary
      try:
          with open('serial_aliases.ini', 'r') as f:
              for line in f:

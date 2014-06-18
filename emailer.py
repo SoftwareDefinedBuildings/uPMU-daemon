@@ -16,6 +16,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-c', '--checktime', help='the number of seconds to wait after polling the database', type=int, default=300)
 parser.add_argument('-a', '--alerttime', help='the minimum number of seconds for which inactivity from a uPMU is considered abnormal', type=int, default=1800)
 parser.add_argument('-e', '--emailtime', help='the minimum number of seconds between emails', type=int, default=900)
+parser.add_argument('-d', '--tolerablewarningdensity', help='the minimum density of warnings that causes an email alert', type=float, default=0.05)
 parser.add_argument('senderaddr', help='the email address from which messages will be sent')
 parser.add_argument('receiveraddrs', help='the email addresses to which messages will be sent', nargs='+')
 args = parser.parse_args()
@@ -23,6 +24,7 @@ args = parser.parse_args()
 CHECKTIME = args.checktime
 ALERTTIME = args.alerttime
 EMAILTIME = args.emailtime
+DENSITY_THRESHOLD = args.tolerablewarningdensity
 SENDERADDR = args.senderaddr
 RECEIVERADDRS = args.receiveraddrs
 
@@ -46,6 +48,7 @@ except:
 client = pymongo.MongoClient()
 latest_time = client.upmu_database.latest_time
 warnings = client.upmu_database.warnings
+warnings_summary = client.upmu_database.warnings_summary
 
 inactive_serials = set()
 events = {} # maps each serial number to a list of EventMessages
@@ -135,6 +138,8 @@ class WarningMessage(EventMessage):
             return 'WARNING: duplicate record for {0} (message generated at {1})'.format(self.start_time, self.event_time)
         elif self.description == 'missing':
             return 'WARNING: missing record(s): no data from {0} to {1} (message generated at {2})'.format(self.start_time, self.end_time, self.event_time)
+        elif self.description == 'missing file':
+            return 'WARNING: missing record(s): no data from {0} to {1}: no CSV file written (message generated at {2})'.format(self.start_time, self.end_time, self.event_time)
         elif self.description == 'misplaced':
             return 'WARNING: misplaced records(s) left uncorrected due to CSV boundary: new CSV file contains records from {0} to {1}, but would normally start at {2} (message generated at {3})'.format(self.start_time, self.end_time, self.prev_time, self.event_time)
 
@@ -152,8 +157,15 @@ while True:
             add_event(serialNumber, EventMessage('inactive', lastReceived))
             alert = True
     warning_check = datetime.datetime.utcnow() # The time of this warning check
-    for document in warnings.find({'warning_time': {'$gt': last_warning_check}}): # Check for warnings for missing/duplicate entries since the last time we checked
-        add_event(document['serial_number'], WarningMessage(document['warning_type'], document['warning_time'], document['start_time'], document.get('end_time', None), document.get('prev_time', None)))
+    for document in warnings_summary.find({'time': {'$gt': last_warning_check}}): # Check for warnings for missing/duplicate entries since the last time we checked
+        if document['written']:
+            # Check if the density of warnings is high enough to warrant an alert
+            density = document['num_warnings'] / ((document['next_csv_start'] - document['csv_start']).total_seconds() / 120)
+            if density > DENSITY_THRESHOLD:
+                for doc in warnings.find({'serial_number': document['serial_number'], 'start_time': {'$gte': document['csv_start'], '$lt': document['next_csv_start']}}).sort('warning_time', pymongo.ASCENDING):
+                    add_event(doc['serial_number'], WarningMessage(doc['warning_type'], doc['warning_time'], doc['start_time'], doc.get('end_time', None), doc.get('prev_time', None)))
+        else:
+            add_event(document['serial_number'], WarningMessage('missing file', document['time'], document['csv_start'], document['next_csv_start'] - datetime.timedelta(0, 1), None))
     last_warning_check = warning_check
     # Wait before checking again
     seconds = seconds_until_next_email()
