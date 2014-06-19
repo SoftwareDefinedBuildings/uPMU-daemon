@@ -30,6 +30,8 @@ parsed = [] # Stores parsed sync_output structs
 
 mongoids = [] # Stores ids of mongo documents
 
+pending = {}
+
 # Parse command line arguments
 parser = argparse.ArgumentParser()
 parser.add_argument('-s', '--seconds', help='the number of seconds per output csv file', type=int, default=900)
@@ -93,7 +95,6 @@ class TCPResolver(Protocol):
         self._parsed = []
         self.firstfilepath = None
         self.serialNum = None
-        self.latestRecord = None
         self.cycleTime = None # The time at which this cycle starts
         
     def dataReceived(self, data):
@@ -145,10 +146,7 @@ class TCPResolver(Protocol):
             
     def connectionLost(self, reason):
         print 'Connection lost:', self.transport.getPeer()
-        print 'Writing pending data...'
-        while self._parsed:
-            self._writecsv()
-        print 'Finished writing pending data'
+        pending[self.serialNum] = (self.cycleTime, self.firstfilepath, self._parsed)
         
     def connectionMade(self):
         self.have = ''
@@ -165,6 +163,11 @@ class TCPResolver(Protocol):
         self.data = None
         
     def _processdata(self):
+        if self.serialNum in pending:
+            if self._parsed:
+                print 'WARNING: multiple uPMUs with the same serial number appear to be connected simultaneously'
+            self.cycleTime, self.firstfilepath, self._parsed = pending[self.serialNum] # Restore from previous session
+            del pending[self.serialNum]
         if self.firstfilepath is None: # To handle the very first file received
             self.firstfilepath = self.filepath
         parseddata = parse(self.data)
