@@ -50,7 +50,7 @@ def lst_to_rows(parsed):
     return rows
     
 def binsearch(sorted_lst, item):
-    """ Returns the index if ITEM in SORTED_LST if it is in the list; otherwise it returns
+    """ Returns the index of ITEM in SORTED_LST if it is in the list; otherwise it returns
     an index closest to where it would be. """
     low = 0
     high = len(sorted_lst) - 1
@@ -59,7 +59,7 @@ def binsearch(sorted_lst, item):
         if sorted_lst[i] < item:
             low = i + 1
         elif sorted_lst[i] == item:
-            break
+            return i
         else:
             high = i - 1
     return low
