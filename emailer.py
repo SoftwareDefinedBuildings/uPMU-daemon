@@ -160,7 +160,7 @@ while True:
     for document in warnings_summary.find({'time': {'$gt': last_warning_check}}): # Check for warnings for missing/duplicate entries since the last time we checked
         if document['written']:
             # Check if the density of warnings is high enough to warrant an alert
-            density = document['num_warnings'] / ((document['next_csv_start'] - document['csv_start']).total_seconds() / 120)
+            density = document['num_warnings'] / (document['next_csv_start'] - document['csv_start']).total_seconds()
             if density > DENSITY_THRESHOLD:
                 for doc in warnings.find({'serial_number': document['serial_number'], 'start_time': {'$gte': document['csv_start'], '$lt': document['next_csv_start']}}).sort('warning_time', pymongo.ASCENDING):
                     add_event(doc['serial_number'], WarningMessage(doc['warning_type'], doc['warning_time'], doc['start_time'], doc.get('end_time', None), doc.get('prev_time', None)))
