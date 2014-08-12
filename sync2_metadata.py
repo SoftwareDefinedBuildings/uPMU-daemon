@@ -11,7 +11,8 @@ upmus = [
     ("P3001035","soda_b"),
     ("P3001071","soda_a"),
     ("P3001097","grizzly_old"),
-    ("P3001082","grizzly_new"),
+    ("P3001082","switch_a6_old"),
+    ("P3001059","grizzly_new"),
     ("P3001293","switch_a6_new"),
     ("P3001319","emma_old"),
     ("P3001065","emma_new")
@@ -43,8 +44,8 @@ for sernum, name in upmus:
                         ("C1MAG","A"),("C2MAG","A"), ("C3MAG","A"),
                         ("C1ANG","deg"),("C2ANG","deg"),("C3ANG","deg"),
                         ("LSTATE","bitmap")]:
-        m = copy.deepycopy(mr)
+        m = copy.deepcopy(mr)
         m["Path"] = "/upmu/%s/%s" % (name, label)
-        m["uuid"] = umap["sernum"][label]
+        m["uuid"] = umap[sernum][label]
         m["Properties"]["UnitofMeasure"] = unit
         bdb.metadata.insert(m)

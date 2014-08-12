@@ -9,7 +9,7 @@ import sys
 
 _client = MongoClient()
 upmudb = _client.upmu_database
-syncdb = _client.sync_database
+syncdb = _client.sync_databasebnkr
 
 def parse(string):
     """ Parses data (in the form of STRING) into a series of sync_output
@@ -41,13 +41,13 @@ def doinsert(q, uid, data, desc, id):
 @defer.inlineCallbacks
 def process(q):
     sernum = sys.argv[1]
-    allfiles = upmudb.received_files.find({"serial_number":sernum},timeout=False).sort("name")
+    allfiles = upmudb.received_files.find({"serial_number":sernum, "xtag":{"$exists":False}},timeout=False).sort("name")
     #print "There are %d files matching ser=%s" % (allfiles.count(), serialnumber)
     epoch = datetime.datetime.utcfromtimestamp(0)
+    ytagbase = 2
     file_idx = 0
     for fl in allfiles:
-        if syncdb.finserts.find({"fid":fl["_id"],"ok":True}).count() != 0:
-            print "skipping (flok)",fl["name"]
+        if "ytag" in fl and fl["ytag"] >= ytagbase:
             continue
         try:
             for synco in parse(fl["data"]):
@@ -88,10 +88,11 @@ def process(q):
             print "FAILo (error)",fl["_id"]
             print e
         print "inserted ", fl["name"]
+        upmudb.received_files.update({"_id":fl["_id"]}, {"$set":{"ytag":ytagbase}})
     print "Inserted all files"
 
 
-d = quasar.connectToArchiver("asylum.cs.berkeley.edu")
+d = quasar.connectToArchiver("bunker.cs.berkeley.edu")
 d.addCallback(process)
 d.addErrback(termerror)
 reactor.run()
