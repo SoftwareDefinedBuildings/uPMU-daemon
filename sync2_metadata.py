@@ -5,7 +5,7 @@ import copy
 from sync2_uuids import umap
 
 _client = MongoClient()
-mdb = _client.sync_database
+mdb = _client.upmu_metadata
 
 upmus = [
     ("P3001035","soda_b"),
@@ -46,6 +46,6 @@ for sernum, name in upmus:
                         ("LSTATE","bitmap")]:
         m = copy.deepcopy(mr)
         m["Path"] = "/upmu/%s/%s" % (name, label)
-        m["uuid"] = umap[sernum][label]
+        m["uuid"] = str(umap[sernum][label])
         m["Properties"]["UnitofMeasure"] = unit
-        bdb.metadata.insert(m)
+        mdb.metadata.insert(m)
