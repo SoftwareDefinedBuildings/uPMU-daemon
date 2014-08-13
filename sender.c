@@ -340,6 +340,7 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
                 {
                     numsubdirs *= 2;
                     subdirarr = realloc(subdirarr, numsubdirs * FILENAMELEN);
+                    check_memory();
                     if (subdirarr == NULL)
                     {
                         printf("Could not allocate memory to store subdirectory names to sort.\n");
@@ -360,6 +361,7 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
                 {
                     numfiles *= 2;
                     filearr = realloc(filearr, numfiles * FILENAMELEN);
+                    check_memory();
                     if (filearr == NULL)
                     {
                         printf("Could not allocate memory to store filenames to sort.\n");
