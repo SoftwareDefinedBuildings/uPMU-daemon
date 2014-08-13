@@ -317,6 +317,8 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
             if (pathlen > FULLPATHLEN)
             {
                 printf("Filepath of length %d found; max allowed is %d\n", pathlen, FULLPATHLEN);
+                free(filearr);
+                free(subdirarr);
                 return -1;
             }
             strcpy(fullpath, dirpath);
@@ -331,6 +333,8 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
                 if (strlen(subdir->d_name) >= FILENAMELEN - 1)
                 {
                     printf("Directory %s has name length of %d; max allowed is %d\n", subdir->d_name, (int) strlen(subdir->d_name), FILENAMELEN - 2);
+                    free(filearr);
+                    free(subdirarr);
                     return -1;
                 }
                 strcpy(subdirarr + (subdirIndex * FILENAMELEN), subdir->d_name);
@@ -406,6 +410,7 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
         result = processdir(fullpath, socket_descriptor, inotify_fd, depth + 1, addwatchtosubs && (subdirIndex == (numsubdirs - 1)));
         if (result < 0)
         {
+            free(subdirarr);
             return -1;
         }
         if (!addedwatch)
@@ -426,8 +431,8 @@ int main(int argc, char* argv[])
 {
     struct rlimit memlimit;
     getrlimit(RLIMIT_DATA, &memlimit);
-    memlimit.rlim_cur = (long) 2097152; // 2 MB
-    memlimit.rlim_max = (long) 3145728; // 3 MB
+    memlimit.rlim_cur = (long) 4000000; // 4 MiB
+    memlimit.rlim_max = (long) 4194304; // 4 MB
     setrlimit(RLIMIT_DATA, &memlimit);
     if (argc != 4 && argc != 5)
     {
