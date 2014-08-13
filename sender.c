@@ -357,6 +357,8 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
                 if (strlen(subdir->d_name) >= FILENAMELEN)
                 {
                     printf("File %s has name length of %d; max allowed is %d\n", subdir->d_name, (int) strlen(subdir->d_name), FILENAMELEN - 1);
+                    free(filearr);
+                    free(subdirarr);
                     return -1;
                 }
                 strcpy(filearr + (fileIndex * FILENAMELEN), subdir->d_name);
