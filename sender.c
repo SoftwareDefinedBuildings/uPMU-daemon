@@ -59,12 +59,9 @@ struct sockaddr* server_addr;
 // the id of the next message sent to the server
 uint32_t sendid = 1;
 
-void check_memory();
-
 /* Deletes a directory if possible, printing messages as necessary. */
 void remove_dir(const char* dirpath)
 {
-    check_memory();
     errno = 0;
     if (rmdir(dirpath) != 0)
     {
@@ -100,13 +97,6 @@ void safe_exit(int arg)
         close_connection(socket_des);
     }
     exit(arg);
-}
-
-void check_memory() {
-    if (errno == ENOMEM) {
-        printf("Exceeded memory limit. Terminating.\n");
-        safe_exit(1);
-    }
 }
 
 /* Attempts to connect to the server_addr and returns the socket descriptor
@@ -172,7 +162,6 @@ int send_file(int socket_descriptor, const char* filepath)
     // Space is added to the end of filename so it is word-aligned.
     uint32_t size_word = roundUp4(size); // size with extra bytes so it's word-aligned
     uint8_t data[16 + size_word + size_serial_word + length] __attribute__((aligned(4)));
-    check_memory();
     *((uint32_t*) data) = sendid;
     *((uint32_t*) (data + 4)) = size;
     *((uint32_t*) (data + 8)) = size_serial;
@@ -278,7 +267,6 @@ int file_entry_comparator(const void* f1, const void* f2)
 /* Processes directory, sending files and adding watches (uses information in global variables) */
 int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int depth, int addwatchtosubs)
 {
-    check_memory();
     if (strlen(dirpath) >= FULLPATHLEN - 5)
     {
         printf("%s too large: all filepaths must be less than %d characters long\n", dirpath, FULLPATHLEN);
@@ -297,10 +285,8 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
     int numsubdirs = 8; // Length of array in FILENAMELEN units
     int numfiles = 8; // Length of array in FILENAMELEN units
     char* filearr = malloc(numfiles * FILENAMELEN);
-    check_memory();
     unsigned int fileIndex = 0; // The number of strings actually in the array
     char* subdirarr = malloc(numsubdirs * FILENAMELEN);
-    check_memory();
     unsigned int subdirIndex = 0; // The number of strings actually in the array
     if (filearr == NULL || subdirarr == NULL)
     {
@@ -344,7 +330,6 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
                 {
                     numsubdirs *= 2;
                     subdirarr = realloc(subdirarr, numsubdirs * FILENAMELEN);
-                    check_memory();
                     if (subdirarr == NULL)
                     {
                         printf("Could not allocate memory to store subdirectory names to sort.\n");
@@ -367,7 +352,6 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
                 {
                     numfiles *= 2;
                     filearr = realloc(filearr, numfiles * FILENAMELEN);
-                    check_memory();
                     if (filearr == NULL)
                     {
                         printf("Could not allocate memory to store filenames to sort.\n");
@@ -432,10 +416,10 @@ void interrupt_handler(int sig)
 int main(int argc, char* argv[])
 {
     struct rlimit memlimit;
-    getrlimit(RLIMIT_DATA, &memlimit);
+    getrlimit(RLIMIT_AS, &memlimit);
     memlimit.rlim_cur = (long) 4000000; // 4 MiB
     memlimit.rlim_max = (long) 4194304; // 4 MB
-    setrlimit(RLIMIT_DATA, &memlimit);
+    setrlimit(RLIMIT_AS, &memlimit);
     if (argc != 4 && argc != 5)
     {
         printf("Usage: %s <directorytowatch> <targetserver> <uPMU serial number> [<port number>]\n", argv[0]);
@@ -447,8 +431,6 @@ int main(int argc, char* argv[])
     {
         children[i].fd = -1;
     }
-    
-    check_memory();
     
     serialNum = argv[3];
     size_serial = strlen(serialNum);
@@ -465,8 +447,6 @@ int main(int argc, char* argv[])
         }
         ADDRESSP = (int) port;
     }
-    
-    check_memory();
     
     // Set up signal to handle Ctrl-C (close socket connection before terminating)
     struct sigaction action;
@@ -502,8 +482,6 @@ int main(int argc, char* argv[])
     }
     connected = 1;
     
-    check_memory();
-    
     // Look for file/directory additions
     int fd = inotify_init();
     if (fd < 0)
@@ -533,8 +511,6 @@ int main(int argc, char* argv[])
     char fullname[FULLPATHLEN];
 
     int index;
-    
-    check_memory();
 
     while(1)
     {
@@ -558,7 +534,6 @@ int main(int argc, char* argv[])
         
         while (index < rlen)
         {
-            check_memory();
             result = 0;
             struct inotify_event* ev = (struct inotify_event*) &buffer[index];
             if (ev->len)
