@@ -44,7 +44,7 @@ def process(q):
     allfiles = upmudb.received_files.find({"serial_number":sernum, "xtag":{"$exists":False}},timeout=False).sort("name")
     #print "There are %d files matching ser=%s" % (allfiles.count(), serialnumber)
     epoch = datetime.datetime.utcfromtimestamp(0)
-    ytagbase = 2
+    ytagbase = 3
     file_idx = 0
     for fl in allfiles:
         if "ytag" in fl and fl["ytag"] >= ytagbase:
