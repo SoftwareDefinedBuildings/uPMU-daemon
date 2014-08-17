@@ -4,7 +4,7 @@
 #define FILENAMELEN 48 // the maximum length of a file or directory name (within the root directory)
 #define TIMEDELAY 10 // the number of seconds to wait between subsequent tries to reconnect
 #define MAXDEPTH 4 // the root directory is at depth 0
-#define CHUNK_SIZE 9//31560 // the size of the portions into which each file is broken up
+#define CHUNK_SIZE 31560 // the size of the portions into which each file is broken up
 
 #include <errno.h>
 #include <signal.h>
