@@ -4,6 +4,7 @@
 #define FILENAMELEN 48 // the maximum length of a file or directory name (within the root directory)
 #define TIMEDELAY 10 // the number of seconds to wait between subsequent tries to reconnect
 #define MAXDEPTH 4 // the root directory is at depth 0
+#define CHUNK_SIZE 9//31560 // the size of the portions into which each file is broken up
 
 #include <errno.h>
 #include <signal.h>
@@ -161,27 +162,18 @@ int send_file(int socket_descriptor, const char* filepath)
     // include the null terminator.
     // Space is added to the end of filename so it is word-aligned.
     uint32_t size_word = roundUp4(size); // size with extra bytes so it's word-aligned
-    uint8_t data[16 + size_word + size_serial_word + length] __attribute__((aligned(4)));
+    uint8_t data[16 + size_word + size_serial_word] __attribute__((aligned(4)));
     *((uint32_t*) data) = sendid;
     *((uint32_t*) (data + 4)) = size;
     *((uint32_t*) (data + 8)) = size_serial;
     *((uint32_t*) (data + 12)) = length;
     strcpy(data + 16, filepath);
     strcpy(data + 16 + size_word, serialNum);
-    uint8_t* datastart = data + 16 + size_word + size_serial_word;
     rewind(input);
     
-    // Read data into array
-    int32_t dataread = fread(datastart, 1, length, input);
-    fclose(input);
-    if (dataread != length) {
-        printf("Error: could not finish reading file %s (read %d out of %d bytes)\n", filepath, dataread, length);
-        return 1;
-    }
-    
-    // Send message over TCP
-    int dataleft = 16 + size_word + size_serial_word + length;
-    int datawritten;
+    // Send info
+    int32_t dataleft = 16 + size_word + size_serial_word;
+    int32_t datawritten;
     uint8_t* dest = data;
     while (dataleft > 0)
     {
@@ -189,11 +181,50 @@ int send_file(int socket_descriptor, const char* filepath)
         if (datawritten < 0)
         {
             printf("Could not send file %s\n", filepath);
+            fclose(input);
             return -1;
         }
         dataleft -= datawritten;
         dest += datawritten;
     }
+    
+    // Send data
+    uint8_t* tosend = malloc(CHUNK_SIZE);
+    if (tosend == NULL) {
+        printf("Could not allocate memory to store part of data file; try reducing CHUNK_SIZE.");
+        safe_exit(1);
+    }
+    uint32_t totalread = 0;
+    int32_t dataread;
+    while (totalread != length)
+    {
+        dataread = fread(tosend, 1, CHUNK_SIZE, input);
+        totalread += dataread;
+        dataleft = dataread;
+        dest = tosend;
+        if (dataread != CHUNK_SIZE && totalread != length)
+        {
+            printf("Error: could not finish reading file %s (read %d out of %d bytes)\n", filepath, totalread, length);
+            free(tosend);
+            fclose(input);
+            return 1;
+        }
+        while (dataleft > 0)
+        {
+            datawritten = write(socket_descriptor, dest, dataleft);
+            if (datawritten < 0)
+            {
+                printf("Could not send file %s\n", filepath);
+                free(tosend);
+                fclose(input);
+                return -1;
+            }
+            dataleft -= datawritten;
+            dest += datawritten;
+        }
+    }
+    free(tosend);
+    fclose(input);
 
     uint32_t response;
     
