@@ -5,17 +5,23 @@ import copy
 from sync2_uuids import umap
 
 _client = MongoClient()
-mdb = _client.upmu_metadata
+mdb = _client.qdf
 
 upmus = [
-    ("P3001035","soda_b"),
-    ("P3001071","soda_a"),
-    ("P3001097","grizzly_old"),
-    ("P3001082","switch_a6_old"),
-    ("P3001059","grizzly_new"),
-    ("P3001293","switch_a6_new"),
-    ("P3001319","emma_old"),
-    ("P3001065","emma_new")
+#    ("P3001035","soda_b"),
+#    ("P3001071","soda_a"),
+#    ("P3001097","grizzly_old"),
+#    ("P3001082","switch_a6_old"),
+    ("P3001059","grizzly_old"),
+    ("P3001293","switch_a6"),
+#    ("P3001319","emma_old"),
+#    ("P3001065","emma_new"),
+    ("P3001244","soda_a"),
+    ("P3001039","soda_b"),
+#    ("P3001192","culler_a"),
+#    ("P3001297","culler_b"),
+    ("P3001190","building_71"),
+    ("P3001352","grizzly_new"),
 ]
 
 mr = {
@@ -25,7 +31,8 @@ mr = {
         "SourceName" : "uPMU",
         "Instrument" :
         {
-            "ModelName" : "PQube3"
+            "ModelName" : "PQube3",
+            "SerialNumber": "serial"
         }
     },
     "uuid" : "",
@@ -48,4 +55,5 @@ for sernum, name in upmus:
         m["Path"] = "/upmu/%s/%s" % (name, label)
         m["uuid"] = str(umap[sernum][label])
         m["Properties"]["UnitofMeasure"] = unit
+        m["Metadata"]["Instrument"]["SerialNumber"] = sernum
         mdb.metadata.insert(m)
