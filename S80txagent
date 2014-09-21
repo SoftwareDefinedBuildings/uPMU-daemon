@@ -1,0 +1,19 @@
+#!/bin/sh
+# This controls the 410txagent program
+case "$1" in
+        start)
+                serial=`cat /tmp/caltags/serial_number`
+                /root/410txagent /root/upmu_data 128.32.37.231 $serial >/tmp/410txagent.log 2>&1 &
+                echo $! > /var/run/410txagent.pid
+        ;;
+
+        stop)
+                kill -s SIGKILL `cat /var/run/410txagent.pid`
+        ;;
+    *)
+            echo "usage: $0 { start | stop }" >&2
+            exit 1
+            ;;
+
+esac
+exit 0
