@@ -3,6 +3,7 @@
 #define FULLPATHLEN 96 // the maximum length of a full file path
 #define FILENAMELEN 48 // the maximum length of a file or directory name (within the root directory)
 #define TIMEDELAY 10 // the number of seconds to wait between subsequent tries to reconnect
+#define NUMFAILURES 360 // the number of failed connection attempts that will be tolerated before the program exits
 #define MAXDEPTH 4 // the root directory is at depth 0
 #define CHUNK_SIZE 31560 // the size of the portions into which each file is broken up
 
@@ -262,6 +263,7 @@ int send_file(int socket_descriptor, const char* filepath)
     {
         sendid = 1;
     }
+    sleep(1); // So that we don't use too much CPU time
     return 0;
 }
 
@@ -274,8 +276,13 @@ int send_file(int socket_descriptor, const char* filepath)
 int send_until_success(int* socket_descriptor, const char* filepath)
 {
     int result;
+    int numreconnects = -1;
     while ((result = send_file(*socket_descriptor, filepath)) == -1)
     {
+        if (++numreconnects >= NUMFAILURES) {
+            printf("Connection lost; failed to reconnect %d times. Exiting program.\n", numreconnects);
+            safe_exit(1);
+        }
         if (connected)
         {
             close_connection(*socket_descriptor);
@@ -448,8 +455,8 @@ int main(int argc, char* argv[])
 {
     struct rlimit memlimit;
     getrlimit(RLIMIT_AS, &memlimit);
-    memlimit.rlim_cur = (long) 4000000; // 4 MiB
-    memlimit.rlim_max = (long) 4194304; // 4 MB
+    memlimit.rlim_cur = (long) 4000000; // 4 MB
+    memlimit.rlim_max = (long) 4194304; // 4 MiB
     setrlimit(RLIMIT_AS, &memlimit);
     if (argc != 4 && argc != 5)
     {
@@ -496,18 +503,26 @@ int main(int argc, char* argv[])
     server.sin_family = AF_INET;
     server.sin_port = htons(ADDRESSP);
     int result = inet_pton(AF_INET, argv[2], &server.sin_addr);
-    if (result < 0) {
+    if (result < 0)
+    {
         perror("invalid address family in \"inet_pton\"");
         safe_exit(1);
-    } else if (result == 0) {
+    }
+    else if (result == 0)
+    {
         perror("invalid ip address in \"inet_pton\"");
         safe_exit(1);
     }
     server_addr = (struct sockaddr*) &server;
     connected = 0;
     socket_des = make_socket();
+    int numreconnects = 0;
     while (socket_des == -1)
     {
+        if (++numreconnects >= NUMFAILURES) {
+            printf("Failed to connect %d times. Exiting program.\n", numreconnects);
+            safe_exit(1);
+        }
         sleep(TIMEDELAY);
         socket_des = make_socket();
     }
