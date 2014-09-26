@@ -34,13 +34,18 @@ pending = {}
 
 # Parse command line arguments
 parser = argparse.ArgumentParser()
-parser.add_argument('-s', '--seconds', help='the number of seconds per output csv file', type=int, default=900)
+parser.add_argument('-s', '--seconds', help='the number of seconds per output csv file', type=int, default=-1)
 parser.add_argument('-d', '--depth', help='the depth of the files in the directory structure being sent (top level is at depth 0)', type=int, default=4)
 parser.add_argument('-o', '--output', help='the directory in which to store the csv files', default='output/')
 parser.add_argument('-p', '--port', help='the port at which to accept incoming messages', type=int, default=1883)
 args = parser.parse_args()
 
-NUM_SECONDS_PER_FILE = args.seconds
+if args.seconds == -1:
+    NUM_SECONDS_PER_FILE = 900
+    write_csv = False
+else:
+    NUM_SECONDS_PER_FILE = args.seconds
+    write_csv = True
 
 DIRDEPTH = args.depth
 
@@ -170,10 +175,6 @@ class TCPResolver(Protocol):
             del pending[self.serialNum]
         if self.firstfilepath is None: # To handle the very first file received
             self.firstfilepath = self.filepath
-        parseddata = parse(self.data)
-        if self.cycleTime is None:
-            secsFromBase = (datetime.datetime(*parseddata[0].sync_data.times) - BASETIME).total_seconds()
-            self.cycleTime = BASETIME + datetime.timedelta(0, secsFromBase - (secsFromBase % NUM_SECONDS_PER_FILE))
         received_file = {'name': self.filepath,
                          'data': Binary(self.data),
                          'published': False,
@@ -182,6 +183,10 @@ class TCPResolver(Protocol):
         docsDeferred = latest_time.update({'serial_number': self.serialNum}, {'$set': {'time_received': received_file['time_received']}}, upsert = True)
         docsDeferred.addErrback(latest_time_error, self.serialNum)
         mongoiddeferred = received_files.insert(received_file)
+        parseddata = parse(self.data)
+        if write_csv and (self.cycleTime is None):
+            secsFromBase = (datetime.datetime(*parseddata[0].sync_data.times) - BASETIME).total_seconds()
+            self.cycleTime = BASETIME + datetime.timedelta(0, secsFromBase - (secsFromBase % NUM_SECONDS_PER_FILE))
         mongoiddeferred.addCallback(self._finishprocessing, parseddata)
         mongoiddeferred.addErrback(databaseerror, self.transport)
         
@@ -189,17 +194,18 @@ class TCPResolver(Protocol):
         parseddata[-1].mongoid = mongoid
         self._parsed.extend(parseddata)
         self.transport.write(self.sendid)
-        latest_time = parseddata[0].sync_data.times
-        for parsed in parseddata:
-            if parsed.sync_data.times > latest_time:
-                latest_time = parsed.sync_data.times
-        latest_time = datetime.datetime(*latest_time)
-        while (latest_time - self.cycleTime).total_seconds() >= NUM_SECONDS_PER_FILE:
-            try:
-                self._writecsv()
-            except BaseException as be:
-                print 'Could not write to CSV file'
-                print 'Details:', be
+        if write_csv:
+            latest_time = parseddata[0].sync_data.times
+            for parsed in parseddata:
+                if parsed.sync_data.times > latest_time:
+                    latest_time = parsed.sync_data.times
+            latest_time = datetime.datetime(*latest_time)
+            while (latest_time - self.cycleTime).total_seconds() >= NUM_SECONDS_PER_FILE:
+                try:
+                    self._writecsv()
+                except BaseException as be:
+                    print 'Could not write to CSV file'
+                    print 'Details:', be
             
     def _writecsv(self):
         """ Attempts to write data in self._parsed to CSV file. Upon success, updates the mongo
