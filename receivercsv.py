@@ -181,14 +181,22 @@ class TCPResolver(Protocol):
                          'time_received': datetime.datetime.utcnow(),
                          'serial_number': self.serialNum}
         docsDeferred = latest_time.update({'serial_number': self.serialNum}, {'$set': {'time_received': received_file['time_received']}}, upsert = True)
-        docsDeferred.addErrback(latest_time_error, self.serialNum)
+        docsDeferred.addErrback(latest_time_error, self.serialNum, self.filepath)
         mongoiddeferred = received_files.insert(received_file)
-        parseddata = parse(self.data)
+        try:
+            parseddata = parse(self.data)
+        except:
+            print 'ERROR: file', self.filepath, 'does not contain a whole number of sync_outputs. Ignoring file.'
+            self.transport.write('\x00\x00\x00\x00')
+            return
         if write_csv and (self.cycleTime is None):
-            secsFromBase = (datetime.datetime(*parseddata[0].sync_data.times) - BASETIME).total_seconds()
-            self.cycleTime = BASETIME + datetime.timedelta(0, secsFromBase - (secsFromBase % NUM_SECONDS_PER_FILE))
+            try:
+                secsFromBase = (datetime.datetime(*parseddata[0].sync_data.times) - BASETIME).total_seconds()
+                self.cycleTime = BASETIME + datetime.timedelta(0, secsFromBase - (secsFromBase % NUM_SECONDS_PER_FILE))
+            except:
+                print 'WARNING:', self.filepath, 'has an invalid date'
         mongoiddeferred.addCallback(self._finishprocessing, parseddata)
-        mongoiddeferred.addErrback(databaseerror, self.transport)
+        mongoiddeferred.addErrback(databaseerror, self.transport, self.filepath)
         
     def _finishprocessing(self, mongoid, parseddata):
         parseddata[-1].mongoid = mongoid
@@ -376,12 +384,13 @@ def print_mongo_error(err, task):
     print 'WARNING: could not update Mongo Database with recent {0}'.format(task)
     print 'Details:', err
     
-def databaseerror(err, transport):
-    print 'Could not update database:', err
+def databaseerror(err, transport, filepath):
+    print 'Could not update database with file', filepath, ':', err
     transport.write('\x00\x00\x00\x00')
         
-def latest_time_error(err, serialnumber):
+def latest_time_error(err, serialnumber, filepath):
     print 'Cannot update latest_time collection for serial number', serialnumber
+    print 'Receipt of file', filepath, 'is not recorded'
     print 'Details:', err
 
 class ResolverFactory(Factory):
