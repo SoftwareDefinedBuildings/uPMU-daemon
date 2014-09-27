@@ -454,6 +454,8 @@ void interrupt_handler(int sig)
 int main(int argc, char* argv[])
 {
     struct rlimit memlimit;
+    setbuf(stdout, NULL);
+    setbuf(stderr, NULL);
     getrlimit(RLIMIT_AS, &memlimit);
     memlimit.rlim_cur = (long) 4000000; // 4 MB
     memlimit.rlim_max = (long) 4194304; // 4 MiB
