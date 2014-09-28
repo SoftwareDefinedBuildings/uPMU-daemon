@@ -61,6 +61,9 @@ struct sockaddr* server_addr;
 // the id of the next message sent to the server
 uint32_t sendid = 1;
 
+// the size of a binary file on this uPMU
+uint32_t file_size = 0; // Initialized to size of first file
+
 /* Deletes a directory if possible, printing messages as necessary. */
 void remove_dir(const char* dirpath)
 {
@@ -149,14 +152,24 @@ int send_file(int socket_descriptor, const char* filepath)
     // Open file
     FILE *input;
     input = fopen(filepath, "rb");
-    if (input == NULL) {
+    if (input == NULL)
+    {
         printf("Error: cannot read file %s.\n", filepath);
+        perror("Details");
         return 1;
     }
     
     // Get the length of the file
     fseek(input, 0, SEEK_END);
     uint32_t length = ftell(input);
+    if (file_size == 0) {
+        file_size = length;
+        printf("Setting expected file size to %d bytes (size of %s)\n", length, filepath);
+    } else if (file_size != length) {
+        printf("Skipping %s for now: unexpected file size (%d bytes): may not be written\n", filepath, length);
+        fclose(input);
+        return 1;
+    }
     
     // Store file number (sendid), length of serial number, length of filename, length of data, and filename in data array
     // The null terminator may be overwritten; the length of the filename does not
@@ -164,12 +177,13 @@ int send_file(int socket_descriptor, const char* filepath)
     // Space is added to the end of filename so it is word-aligned.
     uint32_t size_word = roundUp4(size); // size with extra bytes so it's word-aligned
     uint8_t data[16 + size_word + size_serial_word] __attribute__((aligned(4)));
+    memset(data, 0, 16 + size_word + size_serial_word);
     *((uint32_t*) data) = sendid;
     *((uint32_t*) (data + 4)) = size;
     *((uint32_t*) (data + 8)) = size_serial;
     *((uint32_t*) (data + 12)) = length;
-    strcpy(data + 16, filepath);
-    strcpy(data + 16 + size_word, serialNum);
+    strcpy((char*) (data + 16), filepath);
+    strcpy((char*) (data + 16 + size_word), serialNum);
     rewind(input);
     
     // Send info
@@ -560,7 +574,7 @@ int main(int argc, char* argv[])
 
     int index;
 
-    while(1)
+    while (1)
     {
         //Select changes the timeout and the set
         FD_ZERO(&set);
@@ -615,6 +629,7 @@ int main(int argc, char* argv[])
                         {
                             if (children[j].fd != -1) // if it has already been deleted or there's no watch, don't do anything
                             {
+                                printf("Unwatching %s\n", children[j].path);
                                 if (inotify_rm_watch(fd, children[j].fd))
                                 {
                                     perror("RM watch");
@@ -628,13 +643,17 @@ int main(int argc, char* argv[])
                         }
                         
                         strcpy(children[i].path, fullname);
+                        printf("Watching %s\n", children[i].path);
                         children[i].fd = inotify_add_watch(fd, children[i].path, IN_CREATE | IN_CLOSE_WRITE);
-                        
                         // Ok great, but we may have missed some files, so let's check for them:
                         printf("Processing existing files in %s\n", fullname);
                         if (processdir(fullname, &socket_des, fd, i + 1, 1) < 0)
                         {
                             printf("WARNING: could not process existing files in newly created directory %s", fullname);
+                        }
+                        else
+                        {
+                            printf("Finished processing existing files in %s\n", fullname);
                         }
                     }
                     else
@@ -658,7 +677,7 @@ int main(int argc, char* argv[])
                 }
                 if (result == 1)
                 {
-                    printf("Could not read %s (file already sent or deleted concurrently)\n", ev->name);
+                    printf("Could not read %s (file already sent, deleted concurrently, or not fully written)\n", ev->name);
                 }
             }
             index += EVENT_SIZE + ev->len;
