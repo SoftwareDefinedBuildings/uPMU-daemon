@@ -199,10 +199,10 @@ class TCPResolver(Protocol):
         mongoiddeferred.addErrback(databaseerror, self.transport, self.filepath)
         
     def _finishprocessing(self, mongoid, parseddata):
-        parseddata[-1].mongoid = mongoid
-        self._parsed.extend(parseddata)
         self.transport.write(self.sendid)
+        parseddata[-1].mongoid = mongoid
         if write_csv:
+            self._parsed.extend(parseddata)
             latest_time = parseddata[0].sync_data.times
             for parsed in parseddata:
                 if parsed.sync_data.times > latest_time:
