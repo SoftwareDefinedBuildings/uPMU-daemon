@@ -19,7 +19,7 @@ if args.warningtime is None:
         args.warningtime = 1
         
 try:
-    client = pymongo.MongoClient()
+    client = pymongo.MongoClient('128.32.37.231')
     latest_time = client.upmu_database.latest_time
 except:
     print 'Unknown - could not start Mongo DB'
