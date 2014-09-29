@@ -195,11 +195,11 @@ class TCPResolver(Protocol):
                 self.cycleTime = BASETIME + datetime.timedelta(0, secsFromBase - (secsFromBase % NUM_SECONDS_PER_FILE))
             except:
                 print 'WARNING:', self.filepath, 'has an invalid date'
-        mongoiddeferred.addCallback(self._finishprocessing, parseddata)
+        mongoiddeferred.addCallback(self._finishprocessing, parseddata, self.sendid)
         mongoiddeferred.addErrback(databaseerror, self.transport, self.filepath)
         
-    def _finishprocessing(self, mongoid, parseddata):
-        self.transport.write(self.sendid)
+    def _finishprocessing(self, mongoid, parseddata, sendid):
+        self.transport.write(sendid)
         parseddata[-1].mongoid = mongoid
         if write_csv:
             self._parsed.extend(parseddata)
