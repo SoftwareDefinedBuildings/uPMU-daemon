@@ -145,7 +145,7 @@ class TCPResolver(Protocol):
             else:
                 return
         # if we've reached this point, we have all the data
-        print 'Received {0}, serial number is {1}'.format(self.filepath, self.serialNum), '({0})'.format(aliases.get(self.serialNum, 'alias not known'))
+        print 'Received {0}: serial number is {1}'.format(self.filepath, self.serialNum), '({0}),'.format(aliases.get(self.serialNum, 'alias not known')), 'length is {0}'.format(len(self.data))
         self._processdata()
         self._setup()
             
@@ -182,12 +182,12 @@ class TCPResolver(Protocol):
                          'serial_number': self.serialNum}
         docsDeferred = latest_time.update({'serial_number': self.serialNum}, {'$set': {'time_received': received_file['time_received']}}, upsert = True)
         docsDeferred.addErrback(latest_time_error, self.serialNum, self.filepath)
-        mongoiddeferred = received_files.insert(received_file)
         try:
             parseddata = parse(self.data)
         except:
             print 'ERROR: file', self.filepath, 'does not contain a whole number of sync_outputs. Ignoring file.'
             self.transport.write('\x00\x00\x00\x00')
+            mongoiddeferred = received_files.insert(received_file)
             return
         if write_csv and (self.cycleTime is None):
             try:
@@ -195,11 +195,14 @@ class TCPResolver(Protocol):
                 self.cycleTime = BASETIME + datetime.timedelta(0, secsFromBase - (secsFromBase % NUM_SECONDS_PER_FILE))
             except:
                 print 'WARNING:', self.filepath, 'has an invalid date'
+        mongoiddeferred = received_files.insert(received_file)
         mongoiddeferred.addCallback(self._finishprocessing, parseddata, self.sendid)
         mongoiddeferred.addErrback(databaseerror, self.transport, self.filepath)
         
     def _finishprocessing(self, mongoid, parseddata, sendid):
+        print 'Successfully added file to database'
         self.transport.write(sendid)
+        print 'Sent confirmation of receipt ({0})'.format(repr(sendid))
         parseddata[-1].mongoid = mongoid
         if write_csv:
             self._parsed.extend(parseddata)
