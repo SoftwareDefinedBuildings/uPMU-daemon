@@ -417,7 +417,9 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
     {
         strcpy(fullpath, dirpath);
         strcat(fullpath, filearr + (fileIndex * FILENAMELEN));
-        if (addwatchtosubs && fileIndex == numfiles - 1) {
+        if (addwatchtosubs && (fileIndex == numfiles - 1))
+        {
+            printf("Waiting %d seconds for last file...\n", LASTFILEWAIT);
             sleep(LASTFILEWAIT);
         }
         send_until_success(socket_descriptor, fullpath);
