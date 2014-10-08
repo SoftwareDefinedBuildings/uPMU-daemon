@@ -6,6 +6,8 @@
 #define NUMFAILURES 360 // the number of failed connection attempts that will be tolerated before the program exits
 #define MAXDEPTH 4 // the root directory is at depth 0
 #define CHUNK_SIZE 31560 // the size of the portions into which each file is broken up
+#define LASTFILEWAIT 240 // the number of seconds to wait before sending the last file when processing existing files
+
 
 #include <errno.h>
 #include <signal.h>
@@ -60,9 +62,6 @@ struct sockaddr* server_addr;
 
 // the id of the next message sent to the server
 uint32_t sendid = 1;
-
-// the size of a binary file on this uPMU
-uint32_t file_size = 0; // Initialized to size of first file
 
 /* Deletes a directory if possible, printing messages as necessary. */
 void remove_dir(const char* dirpath)
@@ -162,14 +161,6 @@ int send_file(int socket_descriptor, const char* filepath)
     // Get the length of the file
     fseek(input, 0, SEEK_END);
     uint32_t length = ftell(input);
-    if (file_size == 0) {
-        file_size = length;
-        printf("Setting expected file size to %d bytes (size of %s)\n", length, filepath);
-    } else if (file_size != length) {
-        printf("Skipping %s for now: unexpected file size (%d bytes): may not be written\n", filepath, length);
-        fclose(input);
-        return 1;
-    }
     
     // Store file number (sendid), length of serial number, length of filename, length of data, and filename in data array
     // The null terminator may be overwritten; the length of the filename does not
@@ -426,6 +417,9 @@ int processdir(const char* dirpath, int* socket_descriptor, int inotify_fd, int 
     {
         strcpy(fullpath, dirpath);
         strcat(fullpath, filearr + (fileIndex * FILENAMELEN));
+        if (addwatchtosubs && fileIndex == numfiles - 1) {
+            sleep(LASTFILEWAIT);
+        }
         send_until_success(socket_descriptor, fullpath);
     }
     
