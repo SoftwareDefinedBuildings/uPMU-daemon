@@ -7,6 +7,7 @@
 #define MAXDEPTH 4 // the root directory is at depth 0
 #define CHUNK_SIZE 31560 // the size of the portions into which each file is broken up
 #define LASTFILEWAIT 240 // the number of seconds to wait before sending the last file when processing existing files
+#define SOCKETTIMEOUT 600 // the number of seconds to wait for a send or receive operation on a socket before timing out
 
 
 #include <errno.h>
@@ -63,6 +64,9 @@ struct sockaddr* server_addr;
 // the id of the next message sent to the server
 uint32_t sendid = 1;
 
+// the timeout for the socket
+struct timeval socket_timeout;
+
 /* Deletes a directory if possible, printing messages as necessary. */
 void remove_dir(const char* dirpath)
 {
@@ -96,10 +100,12 @@ void close_connection(int socket_descriptor)
 /* Exit, closing the socket connection if necessary. */
 void safe_exit(int arg)
 {
+    printf("Exiting...\n");
     if (connected)
     {
         close_connection(socket_des);
     }
+    fflush(stdout);
     exit(arg);
 }
 
@@ -118,6 +124,14 @@ int make_socket()
     if (connect(socket_descriptor, server_addr, sizeof(*server_addr)) < 0)
     {
         perror("could not connect");
+        close(socket_descriptor);
+        return -1;
+    }
+    errno = 0;
+    setsockopt(socket_descriptor, SOL_SOCKET, SO_RCVTIMEO, &socket_timeout, sizeof(struct timeval));
+    setsockopt(socket_descriptor, SOL_SOCKET, SO_SNDTIMEO, &socket_timeout, sizeof(struct timeval));
+    if (errno != 0) {
+        perror("could not set socket timeout");
         close(socket_descriptor);
         return -1;
     }
@@ -183,8 +197,9 @@ int send_file(int socket_descriptor, const char* filepath)
     uint8_t* dest = data;
     while (dataleft > 0)
     {
+        errno = 0;
         datawritten = write(socket_descriptor, dest, dataleft);
-        if (datawritten < 0)
+        if (datawritten < 0 || errno != 0)
         {
             printf("Could not send file %s\n", filepath);
             fclose(input);
@@ -193,7 +208,6 @@ int send_file(int socket_descriptor, const char* filepath)
         dataleft -= datawritten;
         dest += datawritten;
     }
-    
     // Send data
     uint8_t* tosend = malloc(CHUNK_SIZE);
     if (tosend == NULL) {
@@ -217,8 +231,9 @@ int send_file(int socket_descriptor, const char* filepath)
         }
         while (dataleft > 0)
         {
+            errno = 0;
             datawritten = write(socket_descriptor, dest, dataleft);
-            if (datawritten < 0)
+            if (datawritten < 0 || errno != 0)
             {
                 printf("Could not send file %s\n", filepath);
                 free(tosend);
@@ -231,15 +246,15 @@ int send_file(int socket_descriptor, const char* filepath)
     }
     free(tosend);
     fclose(input);
-
     uint32_t response;
     
     // Get confirmation of receipt    
     dataleft = 4;
     while (dataleft > 0)
     {
+        errno = 0;
         dataread = read(socket_descriptor, ((uint8_t*) &response) + 4 - dataleft, 4);
-        if (dataread < 0)
+        if (dataread < 0 || errno != 0)
         {
             printf("Could not receive confirmation of receipt of %s\n", filepath);
             return -1;
@@ -476,6 +491,9 @@ int main(int argc, char* argv[])
         safe_exit(1);
     }
     
+    socket_timeout.tv_sec = SOCKETTIMEOUT;
+    socket_timeout.tv_usec = 0;
+
     int i, j;
     for (i = 0; i < MAXDEPTH; i++)
     {
@@ -499,13 +517,23 @@ int main(int argc, char* argv[])
     }
     
     // Set up signal to handle Ctrl-C (close socket connection before terminating)
-    struct sigaction action;
-    action.sa_handler = interrupt_handler;
-    action.sa_flags = 0;
-    sigemptyset(&action.sa_mask);
-    if (-1 == sigaction(SIGINT, &action, NULL))
+    struct sigaction interrupt_action;
+    interrupt_action.sa_handler = interrupt_handler;
+    interrupt_action.sa_flags = 0;
+    sigemptyset(&interrupt_action.sa_mask);
+    if (-1 == sigaction(SIGINT, &interrupt_action, NULL))
     {
         printf("Could not set up signal to handle keyboard interrupt\n");
+        exit(1);
+    }
+
+    struct sigaction socket_action;
+    socket_action.sa_handler = SIG_IGN;
+    socket_action.sa_flags = 0;
+    sigemptyset(&socket_action.sa_mask);
+    if (-1 == sigaction(SIGPIPE, &socket_action, NULL))
+    {
+        printf("Could not set up signal to handle writing to broken socket\n");
         exit(1);
     }
     
@@ -557,6 +585,7 @@ int main(int argc, char* argv[])
     }
     if (processdir(children[0].path, &socket_des, fd, 1, 1) < 0)
     {
+        printf("Could not finish processing existing files.\n");
         safe_exit(1);
     }
     printf("Finished processing existing files.\n");
