@@ -30,11 +30,12 @@ def doinsert(q, uid, data, desc, id):
     df = q.insertValues(str(uid), data)
     def ondone((stat, args)):
         if stat == 'ok':
+            pass
             #print "insert ok",desc
-            syncdb.finserts.insert({"fid":id,"ok":True})
+            #syncdb.finserts.insert({"fid":id,"ok":True})
         else:
             print "insert error",desc
-            syncdb.finserts.insert({"fid":id,"ok":False})
+            #syncdb.finserts.insert({"fid":id,"ok":False})
     df.addCallback(ondone)
     df.addErrback(termerror)
     return df
@@ -42,25 +43,31 @@ def doinsert(q, uid, data, desc, id):
 @defer.inlineCallbacks
 def process_loop(q):
     while True:
-       time.sleep(60)
        print "looping"
-       process(q)
+       yield process(q)
+       print "sleeping"
+       time.sleep(60)
 
 @defer.inlineCallbacks
 def process(q):
+    ytagbase = 50
     sernum = sys.argv[1]
-    allfiles = upmudb.received_files.find({"serial_number":sernum, "xtag":{"$exists":False}},timeout=False).sort("name")
+    allfiles = upmudb.received_files.find({"serial_number":sernum, "xtag":{"$exists":False}, 
+      "$or":[{"ytag":{"$lt":ytagbase}},{"ytag":{"$exists":False}}]},timeout=False).sort("name")
+    print "There are %d files matching ser=%s" % (allfiles.count(), sernum)
     #print "There are %d files matching ser=%s" % (allfiles.count(), serialnumber)
     epoch = datetime.datetime.utcfromtimestamp(0)
-    ytagbase = 12
     file_idx = 0
     for fl in allfiles:
-        if "ytag" in fl and fl["ytag"] >= ytagbase:
-            continue
         try:
+            print ".",
+            sys.stdout.flush()
             for synco in parse(fl["data"]):
                 #Time
                 try:
+                    if (not (2012 < synco.sync_data.times[0] < 2016)):
+                        print "rejecting bad date record"
+                        continue
                     t = datetime.datetime(*synco.sync_data.times)
                     ts = int((t - epoch).total_seconds()*1000000)*1000
                     dfields = [synco.sync_data.L1MagAng, synco.sync_data.L2MagAng, synco.sync_data.L3MagAng,
