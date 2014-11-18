@@ -1,0 +1,66 @@
+#!/usr/local/bin/ipython
+import ConfigParser
+import pymongo
+import sys
+
+use_backup = True
+must_deploy = set()
+if len(sys.argv) == 2:
+    if sys.argv[1] == "--update-all":
+        use_backup = False
+    else:
+        use_backup = True
+
+for upmu in sys.argv[1]:
+    must_deploy.add(upmu)
+
+def parseConfigFile(filename):
+    cparser = ConfigParser.RawConfigParser()
+    filesread = cparser.read(filename)
+    if not filesread:
+       print "{0} is not a valid configuration file".format(filename)
+
+    configuration = {}
+
+    for upmu in cparser.sections():
+        options = {}
+        for option in cparser.options(upmu):
+            options[option] = cparser.get(upmu, option)
+	    configuration[upmu] = options
+    return configuration
+
+config = parseConfigFile('upmuconfig.ini')
+if use_backup:
+    oldconfig = parseConfigFile('backupconfig.ini')
+else:
+    oldconfig = {}
+
+currdir = !pwd
+!cd ..
+!make crosscompile
+!cd {currdir}
+
+client = pymongo.MongoClient()
+metadata = client.upmu_database.upmu_metadata
+
+for upmu in config:
+    try:
+        print "Processing uPMU {0}".format(upmu)
+        if upmu not in oldconfig or upmu in must_deploy:
+            print "Deploying sender on uPMU {0}".format(upmu)
+            if 'ip' in config[upmu]:
+                ip = config[upmu]['ip']
+                !scp -i upmukey sender-arm admin@{ip}:/tmp/newtxagent
+                !ssh -i upmukey admin@{ip} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log && cp /tmp/newtxagent /root/410txagent && /etc/init.d/S80txagent start'"
+                must_deploy.remove(upmu)
+            else:
+                print "WARNING: upmu {0} has no option \"ip\"".format(upmu)
+        if upmu not in oldconfig or oldconfig[upmu] != config[upmu]:
+            print "Updating metadata for uPMU {0}".format(upmu)
+            # we have to update the database in this case
+            newdoc = config[upmu]
+            metadata.update({"serial_number": upmu}, config[upmu], upsert = True)
+    except BaseException as be:
+        print "Failed to process uPMU {0}: {1}".format(upmu, be)
+
+!\cp upmuconfig.ini backupconfig.ini
