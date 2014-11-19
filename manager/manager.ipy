@@ -1,5 +1,7 @@
-#!/usr/local/bin/ipython
+#!/usr/bin/ipython
 import ConfigParser
+import json
+import os
 import pymongo
 import sys
 
@@ -11,7 +13,7 @@ if len(sys.argv) == 2:
     else:
         use_backup = True
 
-for upmu in sys.argv[1]:
+for upmu in sys.argv[1:]:
     must_deploy.add(upmu)
 
 def parseConfigFile(filename):
@@ -35,32 +37,62 @@ if use_backup:
 else:
     oldconfig = {}
 
+curr_upmus = set(config.keys())
+old_upmus = set(oldconfig.keys())
+
 currdir = !pwd
 !cd ..
 !make crosscompile
-!cd {currdir}
+!cd {currdir[0]}
 
 client = pymongo.MongoClient()
-metadata = client.upmu_database.upmu_metadata
+metadata = client.upmu_test_database.upmu_metadata
 
-for upmu in config:
-    try:
-        print "Processing uPMU {0}".format(upmu)
-        if upmu not in oldconfig or upmu in must_deploy:
-            print "Deploying sender on uPMU {0}".format(upmu)
-            if 'ip' in config[upmu]:
-                ip = config[upmu]['ip']
-                !scp -i upmukey sender-arm admin@{ip}:/tmp/newtxagent
-                !ssh -i upmukey admin@{ip} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log && cp /tmp/newtxagent /root/410txagent && /etc/init.d/S80txagent start'"
-                must_deploy.remove(upmu)
-            else:
-                print "WARNING: upmu {0} has no option \"ip\"".format(upmu)
-        if upmu not in oldconfig or oldconfig[upmu] != config[upmu]:
+for upmu in curr_upmus:
+    print "Processing uPMU {0}".format(upmu)
+    if upmu not in oldconfig or upmu in must_deploy:
+        print "Deploying sender on uPMU {0}".format(upmu)
+        try:
+            !scp -i upmukey sender-arm admin@{ip}:/tmp/newtxagent
+            !ssh -i upmukey admin@{upmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log && cp /tmp/newtxagent /root/410txagent && /etc/init.d/S80txagent start'"
+            must_deploy.remove(upmu)
+        except BaseException as be:
+            print "ERROR: could not deploy sender on uPMU {0}: {1}".format(upmu, be)
+            continue
+    if upmu not in oldconfig or oldconfig[upmu] != config[upmu]:
+        try:   
             print "Updating metadata for uPMU {0}".format(upmu)
             # we have to update the database in this case
             newdoc = config[upmu]
-            metadata.update({"serial_number": upmu}, config[upmu], upsert = True)
-    except BaseException as be:
-        print "Failed to process uPMU {0}: {1}".format(upmu, be)
+            if "serial_number" in newdoc:
+                print "WARNING: option serial_number is overwritten with section name"
+            newdoc["ip"] = upmu
+            metadata.update({"ip": upmu}, config[upmu], upsert = True)
+        except BaseException as be:
+            print "ERROR: could not update metadata on uPMU {0}: {1}".format(upmu, be)
+            if upmu in oldconfig:
+                config[upmu] = oldconfig[upmu]
 
-!\cp upmuconfig.ini backupconfig.ini
+for upmu in old_upmus - curr_upmus:
+    print "Stopping sender for uPMU {0}".format(upmu)
+    try:
+        !ssh -i upmukey admin@{upmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log"
+    except BaseException as be:
+        print "ERROR: could not stop sender on uPMU {0}: {1}".format(upmu, be)
+        config[upmu] = oldconfig[upmu]
+        continue
+    print "Removing metadata for uPMU {0}".format(upmu)
+    try:
+        metadata.remove({"ip": upmu})
+    except BaseException as be:
+        print "ERROR: could not remove metadata for uPMU {0}: {1}".format(upmu, be)
+        config[upmu] = oldconfig[upmu]
+
+writeconfig = ConfigParser.RawConfigParser()
+for upmu in config:
+    writeconfig.add_section(upmu)
+    for option in config[upmu]:
+        writeconfig.set(upmu, option, config[upmu][option])
+
+with open('backupconfig.ini', 'w') as backupfile:
+    writeconfig.write(backupfile)
