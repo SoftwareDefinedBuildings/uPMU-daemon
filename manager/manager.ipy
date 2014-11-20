@@ -49,8 +49,14 @@ client = pymongo.MongoClient()
 metadata = client.upmu_test_database.upmu_metadata
 
 for upmu in curr_upmus:
+    if len(upmu) >= 1 and upmu[0] == '?':
+        print "Skipping uPMU {0}: ip address begins with '?'".format(upmu)
+        del config[upmu]
+        continue
+    deployed = True
+    updatedmetadata = True
     print "Processing uPMU {0}".format(upmu)
-    if upmu not in oldconfig or upmu in must_deploy:
+    if upmu not in oldconfig or (upmu in must_deploy or ("name" in config and config["name"] in must_deploy)):
         print "Deploying sender on uPMU {0}".format(upmu)
         try:
             copyresult = !scp -i upmukey ../sender-arm admin@{upmu}:/tmp/newtxagent; echo "$?"
@@ -63,12 +69,14 @@ for upmu in curr_upmus:
                 must_deploy.remove(upmu)
         except BaseException as be:
             print "ERROR: could not deploy sender on uPMU {0}: {1}".format(upmu, be)
-            if upmu in oldconfig:
-                config[upmu] = oldconfig[upmu]
-            else:
-                del config[upmu]
-            continue
-    if upmu not in oldconfig or oldconfig[upmu] != config[upmu]:
+            deployed = False
+    if upmu in oldconfig:
+        old_metadata = oldconfig[upmu]
+    elif ('?' + upmu) in oldconfig:
+        old_metadata = oldconfig['?' + upmu]
+    else:
+        old_metadata = {}     
+    if old_metadata != config[upmu]:
         try:   
             print "Updating metadata for uPMU {0}".format(upmu)
             # we have to update the database in this case
@@ -79,10 +87,24 @@ for upmu in curr_upmus:
             metadata.update({"ip": upmu}, newdoc, upsert = True)
         except BaseException as be:
             print "ERROR: could not update metadata on uPMU {0}: {1}".format(upmu, be)
-            if upmu in oldconfig:
-                config[upmu] = oldconfig[upmu]
+            updatedmetadata = False
+    if not deployed and not updatedmetadata:
+        if upmu in oldconfig:
+            config[upmu] = oldconfig[upmu]
+        else:
+            del config[upmu]
+    elif not updatedmetadata:
+        if upmu in oldconfig:
+            config[upmu] = oldconfig[upmu]
+        else:
+            config[upmu] = {}
+    elif not deployed:
+        config['?' + upmu] = config[upmu]
+        del config[upmu]
 
 for upmu in old_upmus - curr_upmus:
+    if len(upmu) >= 1 and upmu[0] == '?':
+        continue
     print "Stopping sender for uPMU {0}".format(upmu)
     try:
         deployresult = !ssh -i upmukey admin@{upmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log"; echo "$?"
