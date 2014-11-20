@@ -53,21 +53,30 @@ for upmu in curr_upmus:
     if upmu not in oldconfig or upmu in must_deploy:
         print "Deploying sender on uPMU {0}".format(upmu)
         try:
-            !scp -i upmukey sender-arm admin@{ip}:/tmp/newtxagent
-            !ssh -i upmukey admin@{upmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log && cp /tmp/newtxagent /root/410txagent && /etc/init.d/S80txagent start'"
-            must_deploy.remove(upmu)
+            copyresult = !scp -i upmukey ../sender-arm admin@{upmu}:/tmp/newtxagent; echo "$?"
+            if copyresult[-1] != "0":
+                raise BaseException("Could not copy sender to uPMU")
+            deployresult = !ssh -i upmukey admin@{upmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log && cp /tmp/newtxagent /root/410txagent && /etc/init.d/S80txagent start'"; echo "$?"
+            if deployresult[-1] != "0":
+                raise BaseException("Could not deploy sender on uPMU")
+            if upmu in must_deploy:
+                must_deploy.remove(upmu)
         except BaseException as be:
             print "ERROR: could not deploy sender on uPMU {0}: {1}".format(upmu, be)
+            if upmu in oldconfig:
+                config[upmu] = oldconfig[upmu]
+            else:
+                del config[upmu]
             continue
     if upmu not in oldconfig or oldconfig[upmu] != config[upmu]:
         try:   
             print "Updating metadata for uPMU {0}".format(upmu)
             # we have to update the database in this case
-            newdoc = config[upmu]
-            if "serial_number" in newdoc:
-                print "WARNING: option serial_number is overwritten with section name"
+            newdoc = config[upmu].copy()
+            if "ip" in newdoc:
+                print "WARNING: option ip is overwritten with ip address"
             newdoc["ip"] = upmu
-            metadata.update({"ip": upmu}, config[upmu], upsert = True)
+            metadata.update({"ip": upmu}, newdoc, upsert = True)
         except BaseException as be:
             print "ERROR: could not update metadata on uPMU {0}: {1}".format(upmu, be)
             if upmu in oldconfig:
@@ -76,7 +85,10 @@ for upmu in curr_upmus:
 for upmu in old_upmus - curr_upmus:
     print "Stopping sender for uPMU {0}".format(upmu)
     try:
-        !ssh -i upmukey admin@{upmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log"
+        deployresult = !ssh -i upmukey admin@{upmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log"; echo "$?"
+        if deployresult[-1] != "0":
+            raise BaseException("Could not deploy sender on uPMU")
+ 
     except BaseException as be:
         print "ERROR: could not stop sender on uPMU {0}: {1}".format(upmu, be)
         config[upmu] = oldconfig[upmu]
