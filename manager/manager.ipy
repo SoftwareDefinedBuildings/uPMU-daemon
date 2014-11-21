@@ -28,7 +28,7 @@ def parseConfigFile(filename):
         options = {}
         for option in cparser.options(upmu):
             options[option] = cparser.get(upmu, option)
-	    configuration[upmu] = options
+        configuration[upmu] = options
     return configuration
 
 config = parseConfigFile('upmuconfig.ini')
@@ -56,7 +56,7 @@ for upmu in curr_upmus:
     deployed = True
     updatedmetadata = True
     print "Processing uPMU {0}".format(upmu)
-    if upmu not in oldconfig or (upmu in must_deploy or ("name" in config and config["name"] in must_deploy)):
+    if upmu not in oldconfig or (upmu in must_deploy or ("name" in config[upmu] and config[upmu]["name"] in must_deploy)):
         print "Deploying sender on uPMU {0}".format(upmu)
         try:
             copyresult = !scp -i upmukey ../sender-arm admin@{upmu}:/tmp/newtxagent; echo "$?"
@@ -103,24 +103,37 @@ for upmu in curr_upmus:
         del config[upmu]
 
 for upmu in old_upmus - curr_upmus:
-    if len(upmu) >= 1 and upmu[0] == '?':
+    notdeployed = (len(upmu) >= 1 and upmu[0] == '?')
+    if notdeployed and upmu[1:] in curr_upmus:
         continue
-    print "Stopping sender for uPMU {0}".format(upmu)
-    try:
-        deployresult = !ssh -i upmukey admin@{upmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log"; echo "$?"
-        if deployresult[-1] != "0":
-            raise BaseException("Could not deploy sender on uPMU")
+    if not notdeployed:
+        print "Stopping sender for uPMU {0}".format(upmu)
+        try:
+            stilldeployed = False
+            deployresult = !ssh -i upmukey admin@{upmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log'"; echo "$?"
+            if deployresult[-1] != "0":
+                raise BaseException("Could not stop sender on uPMU")
  
-    except BaseException as be:
-        print "ERROR: could not stop sender on uPMU {0}: {1}".format(upmu, be)
-        config[upmu] = oldconfig[upmu]
-        continue
+        except BaseException as be:
+            print "ERROR: could not stop sender on uPMU {0}: {1}".format(upmu, be)
+            stilldeployed = True
+    else:
+        stilldeployed = False
+    if notdeployed:
+        upmu = upmu[1:]
     print "Removing metadata for uPMU {0}".format(upmu)
+    stillhasmetadata = False
     try:
         metadata.remove({"ip": upmu})
     except BaseException as be:
         print "ERROR: could not remove metadata for uPMU {0}: {1}".format(upmu, be)
+        stillhasmetadata = True
+    if stillhasmetadata and stilldeployed:
         config[upmu] = oldconfig[upmu]
+    elif stillhasmetadata:
+        config['?' + upmu] = oldconfig[upmu]
+    elif stilldeployed:
+        config[upmu] = {}
 
 writeconfig = ConfigParser.RawConfigParser()
 for upmu in config:
