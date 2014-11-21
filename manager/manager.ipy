@@ -40,10 +40,7 @@ else:
 curr_upmus = set(config.keys())
 old_upmus = set(oldconfig.keys())
 
-currdir = !pwd
-!cd ..
-!make crosscompile
-!cd {currdir[0]}
+!export PATH=/srv/uPMU-daemon/arm-2011.03/bin:$PATH && make -C .. crosscompile
 
 client = pymongo.MongoClient()
 metadata = client.upmu_test_database.upmu_metadata
