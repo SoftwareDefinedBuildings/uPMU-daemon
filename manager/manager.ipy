@@ -62,6 +62,9 @@ if updated:
 curr_upmus = set(config.keys())
 old_upmus = set(oldconfig.keys())
 
+client = pymongo.MongoClient()
+metadata = client.upmu_test_database.upmu_metadata
+
 # Account for possible removal of uPMUs
 for upmu in old_upmus - curr_upmus:
     notdeployed = (len(upmu) >= 1 and upmu[0] == '?')
@@ -101,10 +104,6 @@ for upmu in old_upmus - curr_upmus:
         config[upmu] = {}
 
 !export PATH=/srv/uPMU-daemon/arm-2011.03/bin:$PATH && make -C .. crosscompile
-
-client = pymongo.MongoClient()
-metadata = client.upmu_test_database.upmu_metadata
-
 for upmu in curr_upmus:
     if len(upmu) >= 1 and upmu[0] == '?':
         print "Skipping uPMU {0}: ip address begins with '?'".format(upmu)
