@@ -120,14 +120,16 @@ for upmu in curr_upmus:
             updatedmetadata = False
     if not deployed and not updatedmetadata:
         if upmu in oldconfig:
-            config[upmu] = oldconfig[upmu]
+            config['?' + upmu] = oldconfig[upmu]
+            config['?' + upmu]["%mustupdate"] = "true"
         else:
-            del config[upmu]
+            config['?' + upmu] = {"%mustupdate": "true"}
     elif not updatedmetadata:
         if upmu in oldconfig:
             config[upmu] = oldconfig[upmu]
+            config[upmu]["%mustupdate"] = "true"
         else:
-            config[upmu] = {}
+            config[upmu] = {"%mustupdate": "true"}
     elif not deployed:
         config['?' + upmu] = config[upmu]
         del config[upmu]
@@ -141,19 +143,19 @@ for upmu in old_upmus - curr_upmus:
     else:
         trueupmu = upmu
     if not notdeployed:
-        print "Stopping sender for uPMU {0}".format(upmu)
+        print "Stopping sender for uPMU {0}".format(trueupmu)
         try:
             stilldeployed = False
-            deployresult = !ssh -i upmukey admin@{upmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log'"; echo "$?"
+            deployresult = !ssh -i upmukey admin@{trueupmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log'"; echo "$?"
             if deployresult[-1] != "0":
                 raise BaseException("Could not stop sender on uPMU")
  
         except BaseException as be:
-            print "ERROR: could not stop sender on uPMU {0}: {1}".format(upmu, be)
+            print "ERROR: could not stop sender on uPMU {0}: {1}".format(trueupmu, be)
             stilldeployed = True
     else:
         stilldeployed = False
-    print "Removing metadata for uPMU {0}".format(upmu)
+    print "Removing metadata for uPMU {0}".format(trueupmu)
     stillhasmetadata = False
     try:
         for stream in oldconfig[upmu]:
