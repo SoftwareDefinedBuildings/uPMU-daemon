@@ -19,29 +19,24 @@ if len(sys.argv) == 2:
 for upmu in sys.argv[1:]:
     must_deploy.add(upmu)
 
-def parseConfigFile(filename):
-    cparser = ConfigParser.RawConfigParser()
-    filesread = cparser.read(filename)
-    if not filesread:
-       print "{0} is not a valid configuration file".format(filename)
+def mergenesteddicts(base, overrides):
+    """ Merges OVERRIDES into BASE, overriding properties where necessary. If
+    additional dictionaries are contained as values, they are recursively
+    merged. """
+    for key in overrides:
+        if key in base and isinstance(base[key], dict) and isinstance(overrides[key], dict):
+                mergenesteddicts(base[key], overrides[key])
+        else:
+            base[key] = overrides[key]
 
-    configuration = {}
-
-    for upmu in cparser.sections():
-        options = {}
-        for option in cparser.options(upmu):
-            options[option] = cparser.get(upmu, option)
-        configuration[upmu] = options
-    return configuration
-
-def writeConfigFile(config, filename):
-    writeconfig = ConfigParser.RawConfigParser()
-    for upmu in config:
-        writeconfig.add_section(upmu)
-        for option in config[upmu]:
-            writeconfig.set(upmu, option, config[upmu][option])
-    with open(filename, 'w') as writefile:
-        writeconfig.write(writefile)
+def deepcopy(dictionary):
+    newdict = {}
+    for key in dictionary:
+        if isinstance(dictionary[key], dict):
+            newdict[key] = deepcopy(dictionary[key])
+        else:
+            newdict[key] = dictionary[key]
+    return newdict
 
 config = ConfigObj('upmuconfig.ini')
 if use_backup:
@@ -116,9 +111,9 @@ for upmu in curr_upmus:
             if "%alias" in collective_metadata:
                 del collective_metadata["%alias"]
             for stream in config[upmu]:
-                if stream not in collective_metadata:
-                    newdoc = collective_metadata.copy()
-                    newdoc.update(config[upmu][stream])
+                if stream in UPMU_STREAMS:
+                    newdoc = deepcopy(collective_metadata)
+                    mergenesteddicts(newdoc, config[upmu][stream])
                     metadata.update({"uuid": config[upmu][stream]['uuid']}, newdoc, upsert = True)
         except BaseException as be:
             print "ERROR: could not update metadata on uPMU {0}: {1}".format(upmu, be)
