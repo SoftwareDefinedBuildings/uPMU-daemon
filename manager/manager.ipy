@@ -6,6 +6,8 @@ import pymongo
 import sys
 import uuid
 
+UPMU_STREAMS = {"L1Mag", "L2Mag", "L3Mag", "L1Ang", "L2Ang", "L3Ang", "C1Mag", "C2Mag", "C3Mag", "C1Ang", "C2Ang", "C3Ang", "LSTATE"}
+
 use_backup = True
 must_deploy = set()
 if len(sys.argv) == 2:
@@ -50,10 +52,14 @@ else:
 # Check if we need to generate UUIDs
 updated = False
 for upmu in config:
-    for key in config[upmu]:
-        if isinstance(config[upmu][key], dict) and 'uuid' not in config[upmu][key]:
+    for stream in UPMU_STREAMS:
+        if stream not in config[upmu]:
             updated = True
-            print "WARNING: Generating new uuid for stream {0} or upmu {1}".format(key, upmu)
+            config[upmu][stream] = {}
+    for key in config[upmu]:
+        if key in UPMU_STREAMS and 'uuid' not in config[upmu][key]:
+            updated = True
+            print "WARNING: Generating new uuid for stream {0} on upmu {1}".format(key, upmu)
             config[upmu][key]['uuid'] = str(uuid.uuid1())
 if updated:
     config.write()
@@ -74,7 +80,7 @@ for upmu in curr_upmus:
     deployed = True
     updatedmetadata = True
     print "Processing uPMU {0}".format(upmu)
-    if upmu not in oldconfig or (upmu in must_deploy or ("name" in config[upmu] and config[upmu]["name"] in must_deploy)):
+    if upmu not in oldconfig or (upmu in must_deploy or ("%alias" in config[upmu] and config[upmu]["%alias"] in must_deploy)):
         print "Deploying sender on uPMU {0}".format(upmu)
         try:
             copyresult = !scp -i upmukey ../sender-arm admin@{upmu}:/tmp/newtxagent; echo "$?"
@@ -94,23 +100,25 @@ for upmu in curr_upmus:
         old_metadata = oldconfig['?' + upmu]
     else:
         old_metadata = {}     
-    if old_metadata != config[upmu]:
+    if old_metadata != config[upmu] or (upmu in must_deploy or ("%alias" in config[upmu] and config[upmu]["%alias"] in must_deploy)):
         try:   
             print "Updating metadata for uPMU {0}".format(upmu)
             # we have to update the database in this case
-            newdoc = config[upmu].copy()
-            if "ip" in newdoc:
-                print "WARNING: option ip is overwritten with ip address"
-            newdoc["ip"] = upmu
-            metadata.update({"ip": upmu}, newdoc, upsert = True)
+            #newdoc = config[upmu].copy()
+            #if "ip" in newdoc:
+            #    print "WARNING: option ip is overwritten with ip address"
+            #newdoc["ip"] = upmu
+            #metadata.update({"ip": upmu}, newdoc, upsert = True)
             collective_metadata = config[upmu].copy()
-            for prop in config[upmu]:
-                if isinstance(collective_metadata[prop], dict):
-                    del collective_metadata[prop]
+            streams = set()
+            for stream in UPMU_STREAMS:
+                del collective_metadata[stream] 
+            if "%alias" in collective_metadata:
+                del collective_metadata["%alias"]
             for stream in config[upmu]:
                 if stream not in collective_metadata:
-                    newdoc = config[upmu][stream].copy();
-                    newdoc.update(collective_metadata)
+                    newdoc = collective_metadata.copy()
+                    newdoc.update(config[upmu][stream])
                     metadata.update({"uuid": config[upmu][stream]['uuid']}, newdoc, upsert = True)
         except BaseException as be:
             print "ERROR: could not update metadata on uPMU {0}: {1}".format(upmu, be)
@@ -153,7 +161,7 @@ for upmu in old_upmus - curr_upmus:
     try:
         metadata.remove({"ip": upmu})
         for stream in oldconfig[upmu]:
-            if isinstance(oldconfig[upmu][stream], dict):
+            if stream in UPMU_STREAMS:
                 metadata.remove({"uuid": oldconfig[upmu][stream]['uuid']})
     except BaseException as be:
         print "ERROR: could not remove metadata for uPMU {0}: {1}".format(upmu, be)
