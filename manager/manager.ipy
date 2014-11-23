@@ -62,6 +62,44 @@ if updated:
 curr_upmus = set(config.keys())
 old_upmus = set(oldconfig.keys())
 
+# Account for possible removal of uPMUs
+for upmu in old_upmus - curr_upmus:
+    notdeployed = (len(upmu) >= 1 and upmu[0] == '?')
+    if notdeployed and upmu[1:] in curr_upmus:
+        continue
+    if notdeployed:
+        trueupmu = upmu[1:]
+    else:
+        trueupmu = upmu
+    if not notdeployed:
+        print "Stopping sender for uPMU {0}".format(trueupmu)
+        try:
+            stilldeployed = False
+            deployresult = !ssh -i upmukey admin@{trueupmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log'"; echo "$?"
+            if deployresult[-1] != "0":
+                raise BaseException("Could not stop sender on uPMU")
+ 
+        except BaseException as be:
+            print "ERROR: could not stop sender on uPMU {0}: {1}".format(trueupmu, be)
+            stilldeployed = True
+    else:
+        stilldeployed = False
+    print "Removing metadata for uPMU {0}".format(trueupmu)
+    stillhasmetadata = False
+    try:
+        for stream in oldconfig[upmu]:
+            if stream in UPMU_STREAMS:
+                metadata.remove({"uuid": oldconfig[upmu][stream]['uuid']})
+    except BaseException as be:
+        print "ERROR: could not remove metadata for uPMU {0}: {1}".format(upmu, be)
+        stillhasmetadata = True
+    if stillhasmetadata and stilldeployed:
+        config[trueupmu] = oldconfig[upmu]
+    elif stillhasmetadata:
+        config['?' + trueupmu] = oldconfig[upmu]
+    elif stilldeployed:
+        config[upmu] = {}
+
 !export PATH=/srv/uPMU-daemon/arm-2011.03/bin:$PATH && make -C .. crosscompile
 
 client = pymongo.MongoClient()
@@ -134,42 +172,6 @@ for upmu in curr_upmus:
         config['?' + upmu] = config[upmu]
         del config[upmu]
 
-for upmu in old_upmus - curr_upmus:
-    notdeployed = (len(upmu) >= 1 and upmu[0] == '?')
-    if notdeployed and upmu[1:] in curr_upmus:
-        continue
-    if notdeployed:
-        trueupmu = upmu[1:]
-    else:
-        trueupmu = upmu
-    if not notdeployed:
-        print "Stopping sender for uPMU {0}".format(trueupmu)
-        try:
-            stilldeployed = False
-            deployresult = !ssh -i upmukey admin@{trueupmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log'"; echo "$?"
-            if deployresult[-1] != "0":
-                raise BaseException("Could not stop sender on uPMU")
- 
-        except BaseException as be:
-            print "ERROR: could not stop sender on uPMU {0}: {1}".format(trueupmu, be)
-            stilldeployed = True
-    else:
-        stilldeployed = False
-    print "Removing metadata for uPMU {0}".format(trueupmu)
-    stillhasmetadata = False
-    try:
-        for stream in oldconfig[upmu]:
-            if stream in UPMU_STREAMS:
-                metadata.remove({"uuid": oldconfig[upmu][stream]['uuid']})
-    except BaseException as be:
-        print "ERROR: could not remove metadata for uPMU {0}: {1}".format(upmu, be)
-        stillhasmetadata = True
-    if stillhasmetadata and stilldeployed:
-        config[trueupmu] = oldconfig[upmu]
-    elif stillhasmetadata:
-        config['?' + trueupmu] = oldconfig[upmu]
-    elif stilldeployed:
-        config[upmu] = {}
 
 
 config.filename = 'backupconfig.ini'
