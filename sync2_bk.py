@@ -41,18 +41,22 @@ def doinsert(q, uid, data, desc, id):
 @defer.inlineCallbacks
 def process(q):
     sernum = sys.argv[1]
-    allfiles = upmudb.received_files.find({"serial_number":sernum, "xtag":{"$exists":False}},timeout=False).sort("name")
-    #print "There are %d files matching ser=%s" % (allfiles.count(), serialnumber)
+    ytagbase = 35
+    print "querying files"
+    allfiles = upmudb.received_files.find({"serial_number":sernum, "xtag":{"$exists":False}, 
+	"$or":[{"ytag":{"$lt":ytagbase}},{"ytag":{"$exists":False}}]},timeout=False).sort("name")
+    print "query returned"
+    print "There are %d files matching ser=%s" % (allfiles.count(), sernum)
     epoch = datetime.datetime.utcfromtimestamp(0)
-    ytagbase = 3
     file_idx = 0
     for fl in allfiles:
-        if "ytag" in fl and fl["ytag"] >= ytagbase:
-            continue
         try:
             for synco in parse(fl["data"]):
                 #Time
                 try:
+                    if (not (2012 < synco.sync_data.times[0] < 2016)):
+                        print "rejecting bad date record"
+                        continue
                     t = datetime.datetime(*synco.sync_data.times)
                     ts = int((t - epoch).total_seconds()*1000000)*1000
                     dfields = [synco.sync_data.L1MagAng, synco.sync_data.L2MagAng, synco.sync_data.L3MagAng,
@@ -88,7 +92,7 @@ def process(q):
             print "FAILo (error)",fl["_id"]
             print e
         print "inserted ", fl["name"]
-        upmudb.received_files.update({"_id":fl["_id"]}, {"$set":{"ytag":ytagbase}})
+        #upmudb.received_files.update({"_id":fl["_id"]}, {"$set":{"ytag":ytagbase}})
     print "Inserted all files"
 
 

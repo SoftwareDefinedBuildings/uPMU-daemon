@@ -12,7 +12,7 @@ upmus = [
 #    ("P3001071","soda_a"),
 #    ("P3001097","grizzly_old"),
 #    ("P3001082","switch_a6_old"),
-    ("P3001059","grizzly_old"),
+#    ("P3001059","grizzly_old"),
     ("P3001293","switch_a6"),
 #    ("P3001319","emma_old"),
 #    ("P3001065","emma_new"),

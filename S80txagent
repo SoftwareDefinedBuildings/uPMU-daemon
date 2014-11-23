@@ -3,7 +3,7 @@
 case "$1" in
         start)
                 serial=`cat /tmp/caltags/serial_number`
-                /root/410txagent /root/upmu_data 128.32.37.231 $serial >/tmp/410txagent.log 2>&1 &
+                /root/410txagent /root/upmu_data 128.32.37.231 $serial > /tmp/410txagent.log 2>&1 &
                 echo $! > /var/run/410txagent.pid
         ;;
 
