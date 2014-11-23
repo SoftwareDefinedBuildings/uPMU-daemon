@@ -136,6 +136,10 @@ for upmu in old_upmus - curr_upmus:
     notdeployed = (len(upmu) >= 1 and upmu[0] == '?')
     if notdeployed and upmu[1:] in curr_upmus:
         continue
+    if notdeployed:
+        trueupmu = upmu[1:]
+    else:
+        trueupmu = upmu
     if not notdeployed:
         print "Stopping sender for uPMU {0}".format(upmu)
         try:
@@ -149,12 +153,9 @@ for upmu in old_upmus - curr_upmus:
             stilldeployed = True
     else:
         stilldeployed = False
-    if notdeployed:
-        upmu = upmu[1:]
     print "Removing metadata for uPMU {0}".format(upmu)
     stillhasmetadata = False
     try:
-        metadata.remove({"ip": upmu})
         for stream in oldconfig[upmu]:
             if stream in UPMU_STREAMS:
                 metadata.remove({"uuid": oldconfig[upmu][stream]['uuid']})
@@ -162,9 +163,9 @@ for upmu in old_upmus - curr_upmus:
         print "ERROR: could not remove metadata for uPMU {0}: {1}".format(upmu, be)
         stillhasmetadata = True
     if stillhasmetadata and stilldeployed:
-        config[upmu] = oldconfig[upmu]
+        config[trueupmu] = oldconfig[upmu]
     elif stillhasmetadata:
-        config['?' + upmu] = oldconfig[upmu]
+        config['?' + trueupmu] = oldconfig[upmu]
     elif stilldeployed:
         config[upmu] = {}
 
