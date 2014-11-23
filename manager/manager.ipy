@@ -161,6 +161,7 @@ for upmu in curr_upmus:
             config['?' + upmu]["%mustupdate"] = "true"
         else:
             config['?' + upmu] = {"%mustupdate": "true"}
+        del config[upmu]
     elif not updatedmetadata:
         if upmu in oldconfig:
             config[upmu] = oldconfig[upmu]
