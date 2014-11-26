@@ -6,7 +6,7 @@ import pymongo
 import sys
 import uuid
 
-UPMU_STREAMS = {"L1Mag", "L2Mag", "L3Mag", "L1Ang", "L2Ang", "L3Ang", "C1Mag", "C2Mag", "C3Mag", "C1Ang", "C2Ang", "C3Ang", "LSTATE"}
+UPMU_STREAMS = {"L1MAG", "L2MAG", "L3MAG", "L1ANG", "L2ANG", "L3ANG", "C1MAG", "C2MAG", "C3MAG", "C1ANG", "C2ANG", "C3ANG", "LSTATE"}
 
 use_backup = True
 must_deploy = set()
@@ -63,7 +63,7 @@ curr_upmus = set(config.keys())
 old_upmus = set(oldconfig.keys())
 
 client = pymongo.MongoClient()
-metadata = client.upmu_test_database.upmu_metadata
+metadata = client.qdf.metadata
 
 # Account for possible removal of uPMUs
 for upmu in old_upmus - curr_upmus:
