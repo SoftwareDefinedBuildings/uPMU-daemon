@@ -66,7 +66,12 @@ client = pymongo.MongoClient()
 metadata = client.qdf.metadata
 
 # Account for possible removal of uPMUs
-for upmu in old_upmus - curr_upmus:
+for upmu in old_upmus:
+    if upmu in curr_upmus:
+        oldport = 22 if "%port" not in oldconfig[upmu] else oldconfig[upmu]["%port"]
+        currport = 22 if "%port" not in config[upmu] else config[upmu]["%port"]
+        if currport == oldport:
+            continue
     notdeployed = (len(upmu) >= 1 and upmu[0] == '?')
     if notdeployed and upmu[1:] in curr_upmus:
         continue
@@ -77,8 +82,9 @@ for upmu in old_upmus - curr_upmus:
     if not notdeployed:
         print "Stopping sender for uPMU {0}".format(trueupmu)
         try:
+            port = 22 if "%port" not in oldconfig[upmu] else oldconfig[upmu]["%port"]
             stilldeployed = False
-            deployresult = !ssh -i upmukey admin@{trueupmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log'"; echo "$?"
+            deployresult = !ssh -i upmukey -p {port} admin@{trueupmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log'"; echo "$?"
             if deployresult[-1] != "0":
                 raise BaseException("Could not stop sender on uPMU")
  
@@ -112,10 +118,11 @@ for upmu in curr_upmus:
     deployed = True
     updatedmetadata = True
     print "Processing uPMU {0}".format(upmu)
-    if upmu not in oldconfig or (upmu in must_deploy or ("%alias" in config[upmu] and config[upmu]["%alias"] in must_deploy)):
+    port = 22 if "%port" not in config[upmu] else config[upmu]["%port"]
+    if upmu not in oldconfig or (upmu in must_deploy or ("%alias" in config[upmu] and config[upmu]["%alias"] in must_deploy)) or (upmu in oldconfig and (22 if "%port" not in oldconfig[upmu] else oldconfig[upmu]["%port"]) != port):
         print "Deploying sender on uPMU {0}".format(upmu)
         try:
-            copyresult = !scp -i upmukey ../sender-arm admin@{upmu}:/tmp/newtxagent; echo "$?"
+            copyresult = !scp -i upmukey -P {port} ../sender-arm admin@{upmu}:/tmp/newtxagent; echo "$?"
             if copyresult[-1] != "0":
                 raise BaseException("Could not copy sender to uPMU")
             deployresult = !ssh -i upmukey admin@{upmu} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log && cp /tmp/newtxagent /root/410txagent && /etc/init.d/S80txagent start'"; echo "$?"
@@ -144,9 +151,11 @@ for upmu in curr_upmus:
             collective_metadata = config[upmu].copy()
             streams = set()
             for stream in UPMU_STREAMS:
-                del collective_metadata[stream] 
-            if "%alias" in collective_metadata:
-                del collective_metadata["%alias"]
+                del collective_metadata[stream]
+            keys = collective_metadata.keys()
+            for key in keys:
+                if len(key) >= 1 and key[0] == '%':
+                    del collective_metadata[key]
             for stream in config[upmu]:
                 if stream in UPMU_STREAMS:
                     newdoc = deepcopy(collective_metadata)
