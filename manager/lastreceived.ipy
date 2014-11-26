@@ -1,0 +1,23 @@
+#!/usr/bin/ipython
+from configobj import ConfigObj
+import pymongo
+
+# Create a mapping from serial number to alias
+config = ConfigObj('upmuconfig.ini')
+aliases = {}
+
+for upmu in config:
+    upmu_details = config[upmu]
+    alias = upmu_details.get("%alias")
+    serial = upmu_details.get("%serial_number")
+    if alias is not None and serial is not None:
+        aliases[serial] = alias
+
+# Get the latest time from Mongo DB
+client = pymongo.MongoClient()
+latest_times = client.upmu_database.latest_time.find()
+
+for entry in latest_times:
+    serial = entry["serial_number"]
+    name = aliases[serial] if serial in aliases else serial
+    print "{0}: {1}".format(name, entry["time_received"].strftime("%a %b %d %Y %H:%M:%S.%f (UTC)"))
