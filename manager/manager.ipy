@@ -56,6 +56,21 @@ for upmu in config:
             updated = True
             print "WARNING: Generating new uuid for stream {0} on upmu {1}".format(key, upmu)
             config[upmu][key]['uuid'] = str(uuid.uuid1())
+    if '%serial_number' not in config[upmu]:
+        updated = True
+        print "WARNING: Finding serial number of uPMU {0}".format(upmu)
+        try:
+            port = 22 if "%port" not in config[upmu] else config[upmu]["%port"]
+            serial_number = !ssh -i upmukey -p {port} admin@{upmu} "cat /tmp/caltags/serial_number"; echo "$?"
+            if len(serial_number) != 1:
+                raise BaseException
+            else:
+                serial_number = serial_number[0]
+            if not isinstance(serial_number, str) or serial_number[-1] != '0':
+                raise BaseException
+            config[upmu]['%serial_number'] = serial_number[:-1]
+        except:
+            print "ERROR: Could not get serial number of uPMU {0}".format(upmu)
 if updated:
     config.write()
 
