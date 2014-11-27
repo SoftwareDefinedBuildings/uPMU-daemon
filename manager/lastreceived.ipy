@@ -1,6 +1,10 @@
 #!/usr/bin/ipython
 from configobj import ConfigObj
+import datetime
 import pymongo
+import pytz
+
+local = pytz.timezone('America/Los_Angeles')
 
 # Create a mapping from serial number to alias
 config = ConfigObj('upmuconfig.ini')
@@ -20,4 +24,7 @@ latest_times = client.upmu_database.latest_time.find()
 for entry in latest_times:
     serial = entry["serial_number"]
     name = aliases[serial] if serial in aliases else serial
-    print "{0}: {1}".format(name, entry["time_received"].strftime("%a %b %d %Y %H:%M:%S.%f (UTC)"))
+    time_received = entry["time_received"]
+    time_localized = pytz.utc.localize(time_received)
+    time_local = time_localized.astimezone(local)
+    print "{0}: {1}".format(name, time_local.strftime("%a %b %d %Y %H:%M:%S.%f %Z [UTC%z]"))
