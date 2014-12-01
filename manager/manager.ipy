@@ -40,12 +40,12 @@ def deepcopy(dictionary):
 
 def killsync2_q(serial_number):
     screen_name = 'sync2q_{0}'.format(serial_number)
-    print 'About to kill existing sync2_q process'
+    print 'About to kill existing manager_sync2q process'
     kill_processes = !screen -S {screen_name} -X quit; echo "$?"
     if kill_processes[0] == '0':
         print "Existing process killed"
     else:
-        print "Could not find existing sync2_q process to kill"
+        print "Could not find existing manager_sync2q process to kill"
 
 config = ConfigObj('upmuconfig.ini')
 if use_backup:
@@ -114,7 +114,7 @@ for upmu in old_upmus:
             if '%serial_number' in oldconfig[upmu]:
                 killsync2_q(oldconfig[upmu]['%serial_number'])
             else:
-                print "WARNING: cannot kill sync2_q for uPMU {0}: serial number is unknown".format(trueupmu)
+                print "WARNING: cannot kill manager_sync2q for uPMU {0}: serial number is unknown".format(trueupmu)
         except BaseException as be:
             print "ERROR: could not stop sender on uPMU {0}: {1}".format(trueupmu, be)
             stilldeployed = True
@@ -164,13 +164,13 @@ for upmu in curr_upmus:
             serial = config[upmu]['%serial_number']
             # Kill existing processes, if any
             killsync2_q(serial)
-            # Start sync2_q.py for this uPMU
-            print "Starting sync2_q.py for uPMU {0} ({1})".format(upmu, serial)
+            # Start manager_sync2q.py for this uPMU
+            print "Starting manager_sync2q.py for uPMU {0} ({1})".format(upmu, serial)
             screen_name = "sync2q_{0}".format(serial)
-            result = !screen -d -m -S {screen_name} python ../sync2_q.py {serial}
-            print "Finished starting sync2_q.py for uPMU {0} ({1})".format(upmu, serial)
+            result = !screen -d -m -S {screen_name} python ../manager_sync2q.py {serial}
+            print "Finished starting manager_sync2q.py for uPMU {0} ({1})".format(upmu, serial)
         else:
-            print "Error: cannot start sync2_q.py for uPMU {0}; no serial number found"
+            print "Error: cannot start manager_sync2q.py for uPMU {0}; no serial number found"
             deployed = False
     if upmu in oldconfig:
         old_metadata = oldconfig[upmu]
