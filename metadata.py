@@ -3,14 +3,21 @@ from SocketServer import ThreadingMixIn
 import json
 import os
 import pymongo
+import re
 import requests
 import string
 import sys
 import urllib
 
+def doc_matches_path(stream_doc, pathstarts):
+    for start in pathstarts:
+        if stream_doc.startswith(start):
+            return True
+    return False
+
 client = pymongo.MongoClient()
 mongo_collection = client.qdf.metadata
-
+tag_defs = client.upmu_database.tag_defs
 class HTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -19,6 +26,20 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write('GET request received')
         
     def do_POST(self):
+        tags = None
+        if self.path.find('?') != -1:
+            arg_string = self.path.split('?')[1]
+            arg_pairs = map(lambda x: x.split('='), arg_string.split('&'))
+            args = {pair[0]: pair[1] for pair in arg_pairs}
+            if 'tags' in args:
+                tag_string = args['tags']
+                tags = tag_string.split(',')
+        if not tags:
+            tags = ['public'] # if no tags are given, assume this
+        pathstarts = set()
+        for tag_def in tag_defs.find({"tag_name": {"$in": tags}}):
+            pathstarts.update(tag_def['path_start'])
+        
         self.query = self.rfile.read(int(self.headers['Content-Length']))
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -28,13 +49,15 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
         if self.query == 'select distinct Metadata/SourceName':
             sources = set()
             for stream in mongo_collection.find():
-                sources.add(stream['Metadata']['SourceName'])
+                if not pathstarts or doc_matches_path(stream, pathstarts):
+                    sources.add(stream['Metadata']['SourceName'])
             self.wfile.write(json.dumps(list(sources)))
         elif self.query.startswith('select distinct Path where Metadata/SourceName'):
             source = self.query.split('"')[1]
             paths = set()
             for stream in mongo_collection.find({"$where": 'this.Metadata.SourceName === "{0}"'.format(source)}):
-                paths.add(stream['Path'])
+                if not pathstarts or doc_matches_path(stream, pathstarts):
+                    paths.add(stream['Path'])
             self.wfile.write(json.dumps(list(paths)))
         elif self.query.startswith('select * where Metadata/SourceName'):
             parts = self.query.split('"')
@@ -42,8 +65,9 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             path = parts[3]
             streams = set()
             for stream in mongo_collection.find({"$where": 'this.Metadata.SourceName === "{0}" && this.Path === "{1}"'.format(source, path)}):
-                del stream['_id']
-                streams.add(json.dumps(stream))
+                if not pathstarts or doc_matches_path(stream, pathstarts):
+                    del stream['_id']
+                    streams.add(json.dumps(stream))
             returnstr = '['
             for stream in streams:
                 returnstr += stream + ", "
