@@ -182,6 +182,22 @@ for upmu in curr_upmus:
     if upmu not in oldconfig or (upmu in must_deploy or ("%alias" in config[upmu] and config[upmu]["%alias"] in must_deploy)) or (upmu in oldconfig and (22 if "%port" not in oldconfig[upmu] else oldconfig[upmu]["%port"]) != port):
         print "Deploying sender on uPMU {0}".format(upmu)
         try:
+            print "Determining if uPMU {0} is prepared for deployment of sender".format(upmu)
+            needs_preparation = !ssh -i upmukey -p {port} admin@{upmu_ip} "su -c 'ls /etc/init.d | grep S80txagent'"; echo $?
+            if needs_preparation[-1] != '0':
+                raise BaseExcpetion("Could not check of uPMU {0} is ready for deployment".format(upmu))
+            if needs_preparation[0] != 'S80txagent':
+                print "Preparing uPMU {0} for deployment of sender".format(upmu)
+                stage1 = !PUBKEY=$(cat upmukey) && ssh -i upmukey -p {port} admin@{upmu_ip} "su -c 'mkdir -p /home/admin/.ssh/; echo $PUBKEY > /home/admin/.ssh/authorized_keys'"; echo $?
+                if stage1[-1] != "0":
+                     raise BaseException("Could not set up ssh key on uPMU")
+                stage2 = !scp -i upmukey -P {port} S80txagent admin@{upmu_ip}:/tmp/; echo $?
+                if stage2[-1] != "0":
+                     raise BaseException("Could not copy S80txagent to uPMU")
+                stage3 = !ssh -i upmukey -p {port} admin@{upmu_ip} "su -c 'cp /tmp/S80txagent /etc/init.d/; chmod a+x /etc/init.d/S80txagent'"; echo $?
+                if stage3[-1] != "0":
+                     raise BaseException("Could not set up S80txagent on uPMU")
+            print "Deploying sender on uPMU {0}".format(upmu)
             copyresult = !scp -i upmukey -P {port} ../sender-arm admin@{upmu_ip}:/tmp/newtxagent; echo "$?"
             if copyresult[-1] != "0":
                 raise BaseException("Could not copy sender to uPMU")
