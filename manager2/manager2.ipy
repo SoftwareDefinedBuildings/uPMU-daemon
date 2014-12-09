@@ -1,0 +1,276 @@
+#!/usr/bin/ipython
+from configobj import ConfigObj
+import json
+import os
+import pymongo
+import sys
+import uuid
+
+UPMU_STREAMS = {"L1MAG", "L2MAG", "L3MAG", "L1ANG", "L2ANG", "L3ANG", "C1MAG", "C2MAG", "C3MAG", "C1ANG", "C2ANG", "C3ANG", "LSTATE"}
+
+use_backup = True
+must_deploy = set()
+if len(sys.argv) == 2:
+    if sys.argv[1] == "--update-all":
+        use_backup = False
+    else:
+        use_backup = True
+
+for upmu in sys.argv[1:]:
+    must_deploy.add(upmu)
+
+def mergenesteddicts(base, overrides):
+    """ Merges OVERRIDES into BASE, overriding properties where necessary. If
+    additional dictionaries are contained as values, they are recursively
+    merged. """
+    for key in overrides:
+        if key in base and isinstance(base[key], dict) and isinstance(overrides[key], dict):
+                mergenesteddicts(base[key], overrides[key])
+        else:
+            base[key] = overrides[key]
+
+def deepcopy(dictionary):
+    newdict = {}
+    for key in dictionary:
+        if isinstance(dictionary[key], dict):
+            newdict[key] = deepcopy(dictionary[key])
+        else:
+            newdict[key] = dictionary[key]
+    return newdict
+
+def killsync2_q(serial_number):
+    screen_name = 'sync2q_ver2_{0}'.format(serial_number)
+    print 'About to kill existing manager_sync2q_ver2 process'
+    kill_processes = !screen -S {screen_name} -X quit; echo "$?"
+    if kill_processes[0] == '0':
+        print "Existing process killed"
+    else:
+        print "Could not find existing manager_sync2q_ver2 process to kill"
+
+def get_ip(section_name):
+    if '%' not in section_name:
+        return section_name
+    else:
+        return section_name.split('%')[0]
+
+config = ConfigObj('upmuconfig.ini')
+if use_backup:
+    oldconfig = ConfigObj('backupconfig.ini')
+else:
+    oldconfig = {}
+
+# Check if we need to generate UUIDs
+updated = False
+for upmu in config:
+    upmu_ip = get_ip(upmu)
+    if '%autounitpath' in config[upmu]:
+        updated = True
+        pathstart = config[upmu]['%autounitpath']
+        del config[upmu]['%autounitpath']
+        for stream in UPMU_STREAMS:
+            if stream in config[upmu]:
+                config[upmu][stream]['Path'] = pathstart + stream
+                if 'Properties' not in config[upmu][stream]:
+                    config[upmu][stream]['Properties'] = {}
+            else:
+                config[upmu][stream] = {'Path': pathstart + stream, 'Properties': {}}
+            if stream.endswith('MAG'):
+                config[upmu][stream]['Properties']['UnitofMeasure'] = 'V' if stream[0] == 'L' else 'A'
+            elif stream.endswith('ANG'):
+                config[upmu][stream]['Properties']['UnitofMeasure'] = 'deg'
+            else:
+                config[upmu][stream]['Properties']['UnitofMeasure'] = 'bitmap'
+    for stream in UPMU_STREAMS:
+        if stream not in config[upmu]:
+            updated = True
+            config[upmu][stream] = {}
+    for key in config[upmu]:
+        if key in UPMU_STREAMS and 'uuid' not in config[upmu][key]:
+            updated = True
+            print "WARNING: Generating new uuid for stream {0} on upmu {1}".format(key, upmu)
+            config[upmu][key]['uuid'] = str(uuid.uuid1())
+    if '%serial_number' not in config[upmu]:
+        updated = True
+        print "WARNING: Finding serial number of uPMU {0}".format(upmu)
+        try:
+            port = 22 if "%port" not in config[upmu] else config[upmu]["%port"]
+            serial_number = !ssh -i upmukey -p {port} admin@{upmu_ip} "cat /tmp/caltags/serial_number"; echo "$?"
+            if len(serial_number) != 1:
+                raise BaseException
+            else:
+                serial_number = serial_number[0]
+            if not isinstance(serial_number, str) or serial_number[-1] != '0':
+                raise BaseException
+            config[upmu]['%serial_number'] = serial_number[:-1]
+            if 'Metadata' not in config[upmu]:
+                config[upmu]['Metadata'] = {'Instrument': {'SerialNumber': serial_number[:-1]}}
+            elif 'Instrument' not in config[upmu]['Metadata']:
+                config[upmu]['Metadata']['Instrument'] = {'SerialNumber': serial_number[:-1]}
+            else:
+                config[upmu]['Metadata']['Instrument']['SerialNumber'] = serial_number[:-1]
+        except:
+            print "ERROR: Could not get serial number of uPMU {0}".format(upmu)
+            print be
+
+if updated:
+    config.write()
+
+curr_upmus = set(config.keys())
+old_upmus = set(oldconfig.keys())
+
+client = pymongo.MongoClient()
+metadata = client.qdf.metadata2
+
+# Account for possible removal of uPMUs
+for upmu in old_upmus:
+    if upmu in curr_upmus:
+        oldport = 22 if "%port" not in oldconfig[upmu] else oldconfig[upmu]["%port"]
+        currport = 22 if "%port" not in config[upmu] else config[upmu]["%port"]
+        if currport == oldport:
+            continue
+    notdeployed = (len(upmu) >= 1 and upmu[0] == '?')
+    if notdeployed and upmu[1:] in curr_upmus:
+        continue
+    if notdeployed:
+        trueupmu = upmu[1:]
+    else:
+        trueupmu = upmu
+    upmu_ip = get_ip(trueupmu)
+    if not notdeployed:
+        print "Stopping sender for uPMU {0}".format(trueupmu)
+        try:
+            port = 22 if "%port" not in oldconfig[upmu] else oldconfig[upmu]["%port"]
+            stilldeployed = False
+            deployresult = !ssh -i upmukey -p {port} admin@{upmu_ip} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log'"; echo "$?"
+            if deployresult[-1] != "0":
+                raise BaseException("Could not stop sender on uPMU")
+            if '%serial_number' in oldconfig[upmu]:
+                killsync2_q(oldconfig[upmu]['%serial_number'])
+            else:
+                print "WARNING: cannot kill manager_sync2q for uPMU {0}: serial number is unknown".format(trueupmu)
+        except BaseException as be:
+            print "ERROR: could not stop sender on uPMU {0}: {1}".format(trueupmu, be)
+            stilldeployed = True
+    else:
+        stilldeployed = False
+    print "Removing metadata for uPMU {0}".format(trueupmu)
+    stillhasmetadata = False
+    try:
+        for stream in oldconfig[upmu]:
+            if stream in UPMU_STREAMS:
+                metadata.remove({"uuid": oldconfig[upmu][stream]['uuid']})
+    except BaseException as be:
+        print "ERROR: could not remove metadata for uPMU {0}: {1}".format(upmu, be)
+        stillhasmetadata = True
+    if stillhasmetadata and stilldeployed:
+        config[trueupmu] = oldconfig[upmu]
+    elif stillhasmetadata:
+        config['?' + trueupmu] = oldconfig[upmu]
+    elif stilldeployed:
+        config[upmu] = {}
+
+!export PATH=/srv/uPMU-daemon/arm-2011.03/bin:$PATH && make -C .. crosscompile
+for upmu in curr_upmus:
+    upmu_ip = get_ip(upmu)
+    if len(upmu) >= 1 and upmu[0] == '?':
+        print "Skipping uPMU {0}: ip address begins with '?'".format(upmu)
+        del config[upmu]
+        continue
+    deployed = True
+    updatedmetadata = True
+    print "Processing uPMU {0}".format(upmu)
+    port = 22 if "%port" not in config[upmu] else config[upmu]["%port"]
+    if upmu not in oldconfig or (upmu in must_deploy or ("%alias" in config[upmu] and config[upmu]["%alias"] in must_deploy)) or (upmu in oldconfig and (22 if "%port" not in oldconfig[upmu] else oldconfig[upmu]["%port"]) != port):
+        try:
+            print "Determining if uPMU {0} is prepared for deployment of sender".format(upmu)
+            needs_preparation = !ssh -i upmukey -p {port} admin@{upmu_ip} "su -c 'ls /etc/init.d | grep S80txagent'"; echo $?
+            if needs_preparation[-1] != '0' and needs_preparation[-1] != '1':
+                raise BaseException("Could not check of uPMU {0} is ready for deployment".format(upmu))
+            if needs_preparation[0] != 'S80txagent':
+                print "Preparing uPMU {0} for deployment of sender".format(upmu)
+                key = !cat upmukey.pub
+		key = key[0]
+                stage1 = !ssh -i upmukey -p {port} admin@{upmu_ip} "su -c 'mkdir -p /home/admin/.ssh/; echo {key} > /home/admin/.ssh/authorized_keys'"; echo $?
+                if stage1[-1] != "0":
+                     print stage1[-1]
+                     raise BaseException("Could not set up ssh key on uPMU")
+                stage2 = !scp -i upmukey -P {port} S80txagent admin@{upmu_ip}:/tmp/; echo $?
+                if stage2[-1] != "0":
+                     raise BaseException("Could not copy S80txagent to uPMU")
+                stage3 = !ssh -i upmukey -p {port} admin@{upmu_ip} "su -c 'cp /tmp/S80txagent /etc/init.d/; chmod a+x /etc/init.d/S80txagent'"; echo $?
+                if stage3[-1] != "0":
+                     raise BaseException("Could not set up S80txagent on uPMU")
+            print "Deploying sender on uPMU {0}".format(upmu)
+            copyresult = !scp -i upmukey -P {port} ../sender-arm admin@{upmu_ip}:/tmp/newtxagent; echo "$?"
+            if copyresult[-1] != "0":
+                raise BaseException("Could not copy sender to uPMU")
+            deployresult = !ssh -i upmukey -p {port} admin@{upmu_ip} "su -c 'killall 410txagent ; rm -f /tmp/410txagent.log ; cp /tmp/newtxagent /root/410txagent && /etc/init.d/S80txagent start'"; echo "$?"
+            if deployresult[-1] != "0":
+                raise BaseException("Could not deploy sender on uPMU")
+            if upmu in must_deploy:
+                must_deploy.remove(upmu)
+        except BaseException as be:
+            print "ERROR: could not deploy sender on uPMU {0}: {1}".format(upmu, be)
+            deployed = False
+        if '%serial_number' in config[upmu]:
+            serial = config[upmu]['%serial_number']
+            # Kill existing processes, if any
+            killsync2_q(serial)
+            # Start manager_sync2q.py for this uPMU
+            print "Starting manager_sync2q_ver2.py for uPMU {0} ({1})".format(upmu, serial)
+            screen_name = "sync2q_ver2_{0}".format(serial)
+            result = !screen -d -m -S {screen_name} python ../manager_sync2q_ver2.py {serial}
+            print "Finished starting manager_sync2q_ver2.py for uPMU {0} ({1})".format(upmu, serial)
+        else:
+            print "Error: cannot start manager_sync2q_ver2.py for uPMU {0}; no serial number found".format(upmu)
+            deployed = False
+    if upmu in oldconfig:
+        old_metadata = oldconfig[upmu]
+    elif ('?' + upmu) in oldconfig:
+        old_metadata = oldconfig['?' + upmu]
+    else:
+        old_metadata = {}     
+    if old_metadata != config[upmu] or (upmu in must_deploy or ("%alias" in config[upmu] and config[upmu]["%alias"] in must_deploy)):
+        try:   
+            print "Updating metadata for uPMU {0}".format(upmu)
+            # we have to update the database in this case
+            #newdoc = config[upmu].copy()
+            #if "ip" in newdoc:
+            #    print "WARNING: option ip is overwritten with ip address"
+            #newdoc["ip"] = upmu
+            #metadata.update({"ip": upmu}, newdoc, upsert = True)
+            collective_metadata = config[upmu].copy()
+            streams = set()
+            for stream in UPMU_STREAMS:
+                del collective_metadata[stream]
+            keys = collective_metadata.keys()
+            for key in keys:
+                if len(key) >= 1 and key[0] == '%':
+                    del collective_metadata[key]
+            for stream in config[upmu]:
+                if stream in UPMU_STREAMS:
+                    newdoc = deepcopy(collective_metadata)
+                    mergenesteddicts(newdoc, config[upmu][stream])
+                    metadata.update({"uuid": config[upmu][stream]['uuid']}, newdoc, upsert = True)
+        except BaseException as be:
+            print "ERROR: could not update metadata on uPMU {0}: {1}".format(upmu, be)
+            updatedmetadata = False
+    if not deployed and not updatedmetadata:
+        if upmu in oldconfig:
+            config['?' + upmu] = oldconfig[upmu]
+            config['?' + upmu]["%mustupdate"] = "true"
+        else:
+            config['?' + upmu] = {"%mustupdate": "true"}
+        del config[upmu]
+    elif not updatedmetadata:
+        if upmu in oldconfig:
+            config[upmu] = oldconfig[upmu]
+            config[upmu]["%mustupdate"] = "true"
+        else:
+            config[upmu] = {"%mustupdate": "true"}
+    elif not deployed:
+        config['?' + upmu] = config[upmu]
+        del config[upmu]
+
+config.filename = 'backupconfig.ini'
+config.write()
