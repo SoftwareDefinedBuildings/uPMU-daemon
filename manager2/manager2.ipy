@@ -39,13 +39,13 @@ def deepcopy(dictionary):
     return newdict
 
 def killsync2_q(serial_number):
-    screen_name = 'sync2q_{0}'.format(serial_number)
-    print 'About to kill existing manager_sync2q process'
+    screen_name = 'sync2q_ver2_{0}'.format(serial_number)
+    print 'About to kill existing manager_sync2q_ver2 process'
     kill_processes = !screen -S {screen_name} -X quit; echo "$?"
     if kill_processes[0] == '0':
         print "Existing process killed"
     else:
-        print "Could not find existing manager_sync2q process to kill"
+        print "Could not find existing manager_sync2q_ver2 process to kill"
 
 def get_ip(section_name):
     if '%' not in section_name:
@@ -94,11 +94,18 @@ for upmu in config:
         print "WARNING: Finding serial number of uPMU {0}".format(upmu)
         try:
             port = 22 if "%port" not in config[upmu] else config[upmu]["%port"]
-            serial_number = !ssh -i upmukey -p {port} admin@{upmu_ip} "cat /tmp/caltags/serial_number"; echo "$?"
-            if len(serial_number) != 1:
+            serial_number = !ssh -i upmukey -p {port} admin@{upmu_ip} 'echo "begin" && cat /tmp/caltags/serial_number && echo ""'; echo "$?"
+            if serial_number[-1] != '0':
+                raise BaseException
+            serial = None
+            for i in xrange(1, len(serial_number) - 1):
+                if len(serial_number[i]) == 7 and serial_number[i][0] == 'P' and serial_number[i - 1].endswith("begin") and serial_number[i + 1].startswith("end"):
+                    serial = serial_number[i]
+                    
+            if serial is None:
                 raise BaseException
             else:
-                serial_number = serial_number[0]
+                serial_number = serial
             if not isinstance(serial_number, str) or serial_number[-1] != '0':
                 raise BaseException
             config[upmu]['%serial_number'] = serial_number[:-1]
@@ -110,6 +117,7 @@ for upmu in config:
                 config[upmu]['Metadata']['Instrument']['SerialNumber'] = serial_number[:-1]
         except:
             print "ERROR: Could not get serial number of uPMU {0}".format(upmu)
+            print be
 
 if updated:
     config.write()
@@ -118,7 +126,7 @@ curr_upmus = set(config.keys())
 old_upmus = set(oldconfig.keys())
 
 client = pymongo.MongoClient()
-metadata = client.qdf.metadata
+metadata = client.qdf.metadata2
 
 # Account for possible removal of uPMUs
 for upmu in old_upmus:
@@ -180,16 +188,18 @@ for upmu in curr_upmus:
     print "Processing uPMU {0}".format(upmu)
     port = 22 if "%port" not in config[upmu] else config[upmu]["%port"]
     if upmu not in oldconfig or (upmu in must_deploy or ("%alias" in config[upmu] and config[upmu]["%alias"] in must_deploy)) or (upmu in oldconfig and (22 if "%port" not in oldconfig[upmu] else oldconfig[upmu]["%port"]) != port):
-        print "Deploying sender on uPMU {0}".format(upmu)
         try:
             print "Determining if uPMU {0} is prepared for deployment of sender".format(upmu)
             needs_preparation = !ssh -i upmukey -p {port} admin@{upmu_ip} "su -c 'ls /etc/init.d | grep S80txagent'"; echo $?
-            if needs_preparation[-1] != '0':
-                raise BaseExcpetion("Could not check of uPMU {0} is ready for deployment".format(upmu))
+            if needs_preparation[-1] != '0' and needs_preparation[-1] != '1':
+                raise BaseException("Could not check of uPMU {0} is ready for deployment".format(upmu))
             if needs_preparation[0] != 'S80txagent':
                 print "Preparing uPMU {0} for deployment of sender".format(upmu)
-                stage1 = !PUBKEY=$(cat upmukey.pub) && ssh -i upmukey -p {port} admin@{upmu_ip} "su -c 'mkdir -p /home/admin/.ssh/; echo $PUBKEY > /home/admin/.ssh/authorized_keys'"; echo $?
+                key = !cat upmukey.pub
+		key = key[0]
+                stage1 = !ssh -i upmukey -p {port} admin@{upmu_ip} "su -c 'mkdir -p /home/admin/.ssh/; echo {key} > /home/admin/.ssh/authorized_keys'"; echo $?
                 if stage1[-1] != "0":
+                     print stage1[-1]
                      raise BaseException("Could not set up ssh key on uPMU")
                 stage2 = !scp -i upmukey -P {port} S80txagent admin@{upmu_ip}:/tmp/; echo $?
                 if stage2[-1] != "0":
@@ -214,12 +224,12 @@ for upmu in curr_upmus:
             # Kill existing processes, if any
             killsync2_q(serial)
             # Start manager_sync2q.py for this uPMU
-            print "Starting manager_sync2q.py for uPMU {0} ({1})".format(upmu, serial)
-            screen_name = "sync2q_{0}".format(serial)
-            result = !screen -d -m -S {screen_name} python ../manager_sync2q.py {serial}
-            print "Finished starting manager_sync2q.py for uPMU {0} ({1})".format(upmu, serial)
+            print "Starting manager_sync2q_ver2.py for uPMU {0} ({1})".format(upmu, serial)
+            screen_name = "sync2q_ver2_{0}".format(serial)
+            result = !screen -d -m -S {screen_name} python ../manager_sync2q_ver2.py {serial}
+            print "Finished starting manager_sync2q_ver2.py for uPMU {0} ({1})".format(upmu, serial)
         else:
-            print "Error: cannot start manager_sync2q.py for uPMU {0}; no serial number found".format(upmu)
+            print "Error: cannot start manager_sync2q_ver2.py for uPMU {0}; no serial number found".format(upmu)
             deployed = False
     if upmu in oldconfig:
         old_metadata = oldconfig[upmu]
