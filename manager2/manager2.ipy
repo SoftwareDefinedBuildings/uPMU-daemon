@@ -94,11 +94,18 @@ for upmu in config:
         print "WARNING: Finding serial number of uPMU {0}".format(upmu)
         try:
             port = 22 if "%port" not in config[upmu] else config[upmu]["%port"]
-            serial_number = !ssh -i upmukey -p {port} admin@{upmu_ip} "cat /tmp/caltags/serial_number"; echo "$?"
-            if len(serial_number) != 1:
+            serial_number = !ssh -i upmukey -p {port} admin@{upmu_ip} 'echo "begin" && cat /tmp/caltags/serial_number && echo ""'; echo "$?"
+            if serial_number[-1] != '0':
+                raise BaseException
+            serial = None
+            for i in xrange(1, len(serial_number) - 1):
+                if len(serial_number[i]) == 7 and serial_number[i][0] == 'P' and serial_number[i - 1].endswith("begin") and serial_number[i + 1].startswith("end"):
+                    serial = serial_number[i]
+                    
+            if serial is None:
                 raise BaseException
             else:
-                serial_number = serial_number[0]
+                serial_number = serial
             if not isinstance(serial_number, str) or serial_number[-1] != '0':
                 raise BaseException
             config[upmu]['%serial_number'] = serial_number[:-1]
