@@ -188,7 +188,7 @@ for upmu in curr_upmus:
                 raise BaseExcpetion("Could not check of uPMU {0} is ready for deployment".format(upmu))
             if needs_preparation[0] != 'S80txagent':
                 print "Preparing uPMU {0} for deployment of sender".format(upmu)
-                stage1 = !PUBKEY=$(cat upmukey) && ssh -i upmukey -p {port} admin@{upmu_ip} "su -c 'mkdir -p /home/admin/.ssh/; echo $PUBKEY > /home/admin/.ssh/authorized_keys'"; echo $?
+                stage1 = !PUBKEY=$(cat upmukey.pub) && ssh -i upmukey -p {port} admin@{upmu_ip} "su -c 'mkdir -p /home/admin/.ssh/; echo $PUBKEY > /home/admin/.ssh/authorized_keys'"; echo $?
                 if stage1[-1] != "0":
                      raise BaseException("Could not set up ssh key on uPMU")
                 stage2 = !scp -i upmukey -P {port} S80txagent admin@{upmu_ip}:/tmp/; echo $?
