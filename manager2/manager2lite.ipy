@@ -1,0 +1,124 @@
+#!/usr/bin/ipython
+from configobj import ConfigObj
+import json
+import os
+import pymongo
+import sys
+import uuid
+
+UPMU_STREAMS = {"L1MAG", "L2MAG", "L3MAG", "L1ANG", "L2ANG", "L3ANG", "C1MAG", "C2MAG", "C3MAG", "C1ANG", "C2ANG", "C3ANG", "LSTATE"}
+
+use_backup = True
+must_deploy = set()
+if len(sys.argv) == 2:
+    if sys.argv[1] == "--update-all":
+        use_backup = False
+    else:
+        use_backup = True
+
+for upmu in sys.argv[1:]:
+    must_deploy.add(upmu)
+
+def mergenesteddicts(base, overrides):
+    """ Merges OVERRIDES into BASE, overriding properties where necessary. If
+    additional dictionaries are contained as values, they are recursively
+    merged. """
+    for key in overrides:
+        if key in base and isinstance(base[key], dict) and isinstance(overrides[key], dict):
+                mergenesteddicts(base[key], overrides[key])
+        else:
+            base[key] = overrides[key]
+
+def deepcopy(dictionary):
+    newdict = {}
+    for key in dictionary:
+        if isinstance(dictionary[key], dict):
+            newdict[key] = deepcopy(dictionary[key])
+        else:
+            newdict[key] = dictionary[key]
+    return newdict
+
+config = ConfigObj('upmuconfig.ini')
+if use_backup:
+    oldconfig = ConfigObj('backupconfig.ini')
+else:
+    oldconfig = {}
+    
+curr_upmus = set(config.keys())
+old_upmus = set(oldconfig.keys())
+
+client = pymongo.MongoClient()
+metadata = client.qdf.metadata2
+
+# Account for possible removal of uPMUs
+for upmu in old_upmus:
+    print "Removing metadata for uPMU {0}".format(trueupmu)
+    stillhasmetadata = False
+    try:
+        for stream in oldconfig[upmu]:
+            if stream in UPMU_STREAMS:
+                metadata.remove({"uuid": oldconfig[upmu][stream]['uuid']})
+    except BaseException as be:
+        print "ERROR: could not remove metadata for uPMU {0}: {1}".format(upmu, be)
+        stillhasmetadata = True
+    if stillhasmetadata and stilldeployed:
+        config[trueupmu] = oldconfig[upmu]
+    elif stillhasmetadata:
+        config['?' + trueupmu] = oldconfig[upmu]
+    elif stilldeployed:
+        config[upmu] = {}
+
+for upmu in curr_upmus:
+    deployed = True
+    updatedmetadata = True
+    print "Processing uPMU {0}".format(upmu)
+    if upmu in oldconfig:
+        old_metadata = oldconfig[upmu]
+    elif ('?' + upmu) in oldconfig:
+        old_metadata = oldconfig['?' + upmu]
+    else:
+        old_metadata = {}     
+    if old_metadata != config[upmu] or (upmu in must_deploy or ("%alias" in config[upmu] and config[upmu]["%alias"] in must_deploy)):
+        try:   
+            print "Updating metadata for uPMU {0}".format(upmu)
+            # we have to update the database in this case
+            #newdoc = config[upmu].copy()
+            #if "ip" in newdoc:
+            #    print "WARNING: option ip is overwritten with ip address"
+            #newdoc["ip"] = upmu
+            #metadata.update({"ip": upmu}, newdoc, upsert = True)
+            collective_metadata = config[upmu].copy()
+            streams = set()
+            for stream in UPMU_STREAMS:
+                del collective_metadata[stream]
+            keys = collective_metadata.keys()
+            for key in keys:
+                if len(key) >= 1 and key[0] == '%':
+                    del collective_metadata[key]
+            for stream in config[upmu]:
+                if stream in UPMU_STREAMS:
+                    newdoc = deepcopy(collective_metadata)
+                    mergenesteddicts(newdoc, config[upmu][stream])
+                    metadata.update({"uuid": config[upmu][stream]['uuid']}, newdoc, upsert = True)
+        except BaseException as be:
+            print "ERROR: could not update metadata on uPMU {0}: {1}".format(upmu, be)
+            updatedmetadata = False
+    if not deployed and not updatedmetadata:
+        if upmu in oldconfig:
+            config['?' + upmu] = oldconfig[upmu]
+            config['?' + upmu]["%mustupdate"] = "true"
+        else:
+            config['?' + upmu] = {"%mustupdate": "true"}
+        del config[upmu]
+    elif not updatedmetadata:
+        if upmu in oldconfig:
+            config[upmu] = oldconfig[upmu]
+            config[upmu]["%mustupdate"] = "true"
+        else:
+            config[upmu] = {"%mustupdate": "true"}
+    elif not deployed:
+        config['?' + upmu] = config[upmu]
+        del config[upmu]
+
+config.filename = 'backupconfig.ini'
+config.write()

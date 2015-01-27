@@ -482,8 +482,8 @@ int main(int argc, char* argv[])
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
     getrlimit(RLIMIT_AS, &memlimit);
-    memlimit.rlim_cur = (long) 4000000; // 4 MB
-    memlimit.rlim_max = (long) 4194304; // 4 MiB
+    memlimit.rlim_cur = (long) 400000000; // 4 MB
+    memlimit.rlim_max = (long) 419430400; // 4 MiB
     setrlimit(RLIMIT_AS, &memlimit);
     if (argc != 4 && argc != 5)
     {
