@@ -1,12 +1,11 @@
 uPMU-daemon
 ===========
-The file "sender.c" contains code to detect when new directories and ".dat"
-files are created in a given directory and send the ".dat" files to a server
-using TCP.
+This repository contains some of the tools needed to process the data produced
+by uPMUs and store their metadata. sender.c and receivercsv.py are programs
+that send data from the uPMUs to a server where the files are stored in Mongo
+DM. The "manager2" program deploys sender.c on the uPMUs and updates their
+metadata according to a configuration file. emailer.py allows one to receive
+email notifications about irregularities in data collection.
 
-The file "receiver.py" contains code to receive the ".dat" files and publish
-them to sMAP, or write them to ".csv" files. Data has been published to
-http://archiver.upmu.cal-sdb.org:8079.
-
-The file "receiverold.py" contains an older version of receiver.py that blocks
-input while it publishes.
+sender and its controller S80txagent run on the uPMUs. All other programs run
+on a server.
