@@ -49,7 +49,6 @@ func processMessage(sendid []byte, sernum string, filepath string, data []byte) 
 		SerialNumber: sernum,
 	}
 	
-	// Update latest time
 	var docsel bson.M = bson.M{"serial_number": sernum}
 	var updatecmd bson.M = bson.M{"$set": bson.M{"time_received": msgdoc.TimeReceived}}
 	
@@ -59,16 +58,17 @@ func processMessage(sendid []byte, sernum string, filepath string, data []byte) 
     
 	defer func () { send_semaphore <- upmu_database }()
 	
-	_, dberr = latest_times.Upsert(docsel, updatecmd)
-	if dberr != nil {
-		fmt.Printf("Could not update latest_times collection: %v\n", dberr)
-		return make([]byte, 4, 4)
-	}
-	
 	// Insert data
 	dberr = received_files.Insert(msgdoc)
 	if dberr != nil {
 		fmt.Printf("Could not insert file into received_files collection\n", dberr)
+		return make([]byte, 4, 4)
+	}
+	
+	// Update latest time
+	_, dberr = latest_times.Upsert(docsel, updatecmd)
+	if dberr != nil {
+		fmt.Printf("Could not update latest_times collection: %v\n", dberr)
 		return make([]byte, 4, 4)
 	}
 	
