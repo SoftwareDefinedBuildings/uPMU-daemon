@@ -11,9 +11,7 @@ import (
 	"time"
 )
 
-var (
-	send_semaphore chan *mgo.Database
-)
+var send_semaphore chan *mgo.Database
 
 const (
 	CONNBUFLEN = 1024 // number of bytes we read from the connection at a time
@@ -22,6 +20,7 @@ const (
 	EXPDATALEN = 757440
 	MAXDATALEN = 75744000
 	MAXCONCURRENTDBOPS = 10
+	TIMEOUTSECS = 30
 )
 
 func roundUp4(x uint32) uint32 {
@@ -121,6 +120,7 @@ func handlePMUConn(conn *net.TCPConn) {
 	var snbuffer []byte = make([]byte, MAXSERNUMLEN, MAXSERNUMLEN)
 	var snindex uint32
 	var sernum string
+	var newsernum string
 	
 	/* DTBUFFER stores the part of the uPMU data received so far.
 	   If a file is bigger than expected, we allocate a bigger buffer, specially for that file. */
@@ -149,7 +149,7 @@ func handlePMUConn(conn *net.TCPConn) {
 		for !recvdfull {
 			n, err = conn.Read(buf)
 			bpos = 0
-			if totrecv < 16 {
+			if bpos < n && totrecv < 16 {
 				for ibindex < 16 && bpos < n {
 					infobuffer[ibindex] = buf[bpos]
 					ibindex++
@@ -163,15 +163,15 @@ func handlePMUConn(conn *net.TCPConn) {
 					lendt = binary.LittleEndian.Uint32(infobuffer[12:16])
 					lenpfp = roundUp4(lenfp)
 					lenpsn = roundUp4(lensn)
-					if lenfp > MAXFILEPATHLEN {
+					if lenfp != 0 && lenfp > MAXFILEPATHLEN {
 						fmt.Printf("Filepath length fails sanity check: %v\n", lenfp)
 						return
 					}
-					if lensn > MAXSERNUMLEN {
+					if lensn != 0 && lensn > MAXSERNUMLEN {
 						fmt.Printf("Serial number length fails sanity check: %v\n", lensn)
 						return
 					}
-					if lendt > MAXDATALEN {
+					if lendt != 0 && lendt > MAXDATALEN {
 						fmt.Printf("Data length fails sanity check: %v\n", lendt)
 						return
 					}
@@ -182,7 +182,7 @@ func handlePMUConn(conn *net.TCPConn) {
 					}
 				}
 			}
-			if totrecv < 16 + lenpfp {
+			if bpos < n && totrecv < 16 + lenpfp {
 				for fpindex < lenpfp && bpos < n {
 					fpbuffer[fpindex] = buf[bpos]
 					fpindex++
@@ -193,7 +193,7 @@ func handlePMUConn(conn *net.TCPConn) {
 					filepath = string(fpbuffer[:lenfp])
 				}
 			}
-			if totrecv < 16 + lenpfp + lenpsn {
+			if bpos < n && totrecv < 16 + lenpfp + lenpsn {
 				for snindex < lenpsn && bpos < n {
 					snbuffer[snindex] = buf[bpos]
 					snindex++
@@ -201,10 +201,15 @@ func handlePMUConn(conn *net.TCPConn) {
 					totrecv++
 				}
 				if snindex == lenpsn {
-					sernum = string(snbuffer[:lensn])
+					newsernum = string(snbuffer[:lensn])
+					if sernum != "" && newsernum != sernum {
+						fmt.Printf("WARNING: serial number changed from %s to %s\n", sernum, newsernum)
+						fmt.Println("Updating serial number for next write")
+					}
+					sernum = newsernum
 				}
 			}
-			if totrecv < 16 + lenpfp + lenpsn + lendt {
+			if bpos < n && totrecv < 16 + lenpfp + lenpsn + lendt {
 				for dtindex < lendt && bpos < n {
 					dtbuffer[dtindex] = buf[bpos]
 					dtindex++
@@ -217,7 +222,7 @@ func handlePMUConn(conn *net.TCPConn) {
 					}
 					// if we've reached this point, we have all the data
 					recvdfull = true
-					fmt.Printf("Received %s: serial number is %s (%s), length is %v\n", filepath, sernum, "alias not known", lendt)
+					fmt.Printf("Received %s: serial number is %s, length is %v\n", filepath, sernum, lendt)
 					resp = processMessage(sendid, sernum, filepath, dtbuffer[:lendt])
 					_, erw = conn.Write(resp)
 					if erw != nil {
@@ -247,6 +252,9 @@ func main() {
 		fmt.Printf("Could not connect to Mongo DB: %v\n", err)
 		os.Exit(0)
 	}
+	
+	var safetylevel *mgo.Safe = &mgo.Safe{W: 1, WTimeout: 1000 * TIMEOUTSECS, FSync: true}
+	basesession.EnsureSafe(safetylevel)
 	
 	var session *mgo.Session
     var upmu_database *mgo.Database
