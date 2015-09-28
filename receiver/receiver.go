@@ -12,13 +12,7 @@ import (
 )
 
 var (
-	session *mgo.Session
-	upmu_database *mgo.Database
-	received_files *mgo.Collection
-	latest_times *mgo.Collection
-	warnings *mgo.Collection
-	warnings_summary *mgo.Collection
-	DIRDEPTH int
+	send_semaphore chan *mgo.Database
 )
 
 const (
@@ -27,6 +21,7 @@ const (
 	MAXSERNUMLEN = 32
 	EXPDATALEN = 757440
 	MAXDATALEN = 75744000
+	MAXCONCURRENTDBOPS = 10
 )
 
 func roundUp4(x uint32) uint32 {
@@ -58,6 +53,13 @@ func processMessage(sendid []byte, sernum string, filepath string, data []byte) 
 	// Update latest time
 	var docsel bson.M = bson.M{"serial_number": sernum}
 	var updatecmd bson.M = bson.M{"$set": bson.M{"time_received": msgdoc.TimeReceived}}
+	
+	var upmu_database *mgo.Database = <-send_semaphore
+	var received_files *mgo.Collection = upmu_database.C("received_files")
+    var latest_times *mgo.Collection = upmu_database.C("latest_times")
+    
+	defer func () { send_semaphore <- upmu_database }()
+	
 	_, dberr = latest_times.Upsert(docsel, updatecmd)
 	if dberr != nil {
 		fmt.Printf("Could not update latest_times collection: %v\n", dberr)
@@ -233,24 +235,29 @@ func handlePMUConn(conn *net.TCPConn) {
 }
 
 func main() {
-	var depth *int = flag.Int("d", 4, "the depth of the files in the directory structure being sent (top level is at depth 0)")
 	var port *int = flag.Int("p", 1883, "the port at which to accept incoming messages")
 	flag.Parse()
-	DIRDEPTH = *depth
 
 	var err error
 	
-	session, err = mgo.Dial("localhost:27017")
+	var basesession *mgo.Session
+	
+	basesession, err = mgo.Dial("localhost:27017")
 	if err != nil {
 		fmt.Printf("Could not connect to Mongo DB: %v\n", err)
 		os.Exit(0)
 	}
 	
-	upmu_database = session.DB("upmu_database")
-	received_files = upmu_database.C("received_files")
-	latest_times = upmu_database.C("latest_times")
-	warnings = upmu_database.C("warnings")
-	warnings_summary = upmu_database.C("warnings_summary")
+	var session *mgo.Session
+    var upmu_database *mgo.Database
+	
+	send_semaphore = make(chan *mgo.Database, MAXCONCURRENTDBOPS)
+	for i := 0; i < MAXCONCURRENTDBOPS; i++ {
+		session = basesession.Copy()
+		upmu_database = session.DB("upmu_database")
+		send_semaphore <- upmu_database
+	}
+	basesession.Close()
 	
 	var bindaddr *net.TCPAddr
 	var listener *net.TCPListener
