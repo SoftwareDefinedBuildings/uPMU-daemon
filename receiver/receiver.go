@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"gopkg.in/mgo.v2"
+	"gopkg.in/mgo.v2/bson"
 	"net"
 	"os"
+	"time"
 )
 
 var (
@@ -31,9 +33,46 @@ func roundUp4(x uint32) uint32 {
 	return (x + 3) & 0xFFFFFFFC
 }
 
+type MessageDoc struct {
+	Filepath string `json:"name" bson:"name"`
+	Data bson.Binary `json:"data" bson:"data"`
+	Published bool `json:"published" bson:"published"`
+	TimeReceived time.Time `json:"time_received" bson:"time_received"`
+	SerialNumber string `json:"time_received" bson:"serial_number"`
+}
+
 func processMessage(sendid []byte, sernum string, filepath string, data []byte) []byte {
-	//TODO
-	return make([]byte, 4, 4)
+	var dberr error
+	
+	var msgdoc *MessageDoc = &MessageDoc{
+		Filepath: filepath,
+		Data: bson.Binary{
+			Kind: 0x00,
+			Data: data,
+		},
+		Published: false,
+		TimeReceived: time.Now().UTC(),
+		SerialNumber: sernum,
+	}
+	
+	// Update latest time
+	var docsel bson.M = bson.M{"serial_number": sernum}
+	var updatecmd bson.M = bson.M{"$set": bson.M{"time_received": msgdoc.TimeReceived}}
+	_, dberr = latest_times.Upsert(docsel, updatecmd)
+	if dberr != nil {
+		fmt.Printf("Could not update latest_times collection: %v\n", dberr)
+		return make([]byte, 4, 4)
+	}
+	
+	// Insert data
+	dberr = received_files.Insert(msgdoc)
+	if dberr != nil {
+		fmt.Printf("Could not insert file into received_files collection\n", dberr)
+		return make([]byte, 4, 4)
+	}
+	
+	// Database was successfully updated
+	return sendid
 }
 
 func handlePMUConn(conn *net.TCPConn) {
@@ -180,13 +219,13 @@ func handlePMUConn(conn *net.TCPConn) {
 					resp = processMessage(sendid, sernum, filepath, dtbuffer[:lendt])
 					_, erw = conn.Write(resp)
 					if erw != nil {
-						fmt.Printf("Write to TCP Connection did not complete successfully: %v\n", erw);
+						fmt.Printf("Connection lost: %v (write failed: %v)\n", conn.RemoteAddr().String(), erw);
 						return
 					}
 				}
 			}
 			if err != nil {
-				fmt.Printf("Read from TCP Connection did not complete successfully: %v\n", err)
+				fmt.Printf("Connection lost: %v (reason: %v)\n", conn.RemoteAddr().String(), err)
 				return
 			}
 		}
