@@ -9,9 +9,13 @@ import (
 	"net"
 	"os"
 	"time"
+	"bufio"
+	"strings"
 )
 
 var send_semaphore chan *mgo.Database
+
+var aliases map[string]string
 
 const (
 	CONNBUFLEN = 1024 // number of bytes we read from the connection at a time
@@ -37,7 +41,7 @@ type MessageDoc struct {
 
 func processMessage(sendid []byte, sernum string, filepath string, data []byte) []byte {
 	var dberr error
-	
+
 	var msgdoc *MessageDoc = &MessageDoc{
 		Filepath: filepath,
 		Data: bson.Binary{
@@ -48,80 +52,80 @@ func processMessage(sendid []byte, sernum string, filepath string, data []byte) 
 		TimeReceived: time.Now().UTC(),
 		SerialNumber: sernum,
 	}
-	
+
 	var docsel bson.M = bson.M{"serial_number": sernum}
 	var updatecmd bson.M = bson.M{"$set": bson.M{"time_received": msgdoc.TimeReceived}}
-	
+
 	var upmu_database *mgo.Database = <-send_semaphore
 	var received_files *mgo.Collection = upmu_database.C("received_files")
     var latest_times *mgo.Collection = upmu_database.C("latest_times")
-    
+
 	defer func () { send_semaphore <- upmu_database }()
-	
+
 	// Insert data
 	dberr = received_files.Insert(msgdoc)
 	if dberr != nil {
 		fmt.Printf("Could not insert file into received_files collection\n", dberr)
 		return make([]byte, 4, 4)
 	}
-	
+
 	// Update latest time
 	_, dberr = latest_times.Upsert(docsel, updatecmd)
 	if dberr != nil {
 		fmt.Printf("Could not update latest_times collection: %v\n", dberr)
 		return make([]byte, 4, 4)
 	}
-	
+
 	// Database was successfully updated
 	return sendid
 }
 
 func handlePMUConn(conn *net.TCPConn) {
 	fmt.Printf("Connected: %s\n", conn.RemoteAddr().String())
-	
+
 	defer conn.Close()
-	
+
 	/* Stores error on failed read from TCP connection. */
 	var err error
-	
+
 	/* Stores error on failed write to TCP connection. */
 	var erw error
-	
+
 	/* The id of a message is 4 bytes long. */
 	var sendid []byte
-	
+
 	/* The length of the filepath. */
 	var lenfp uint32
 	/* The length of the filepath, including the padding added so it ends on a word boundary. */
 	var lenpfp uint32
-	
+
 	/* The length of the serial number. */
 	var lensn uint32
 	/* The length of the serial number, including the padding added so it ends on a word boundary. */
 	var lenpsn uint32
-	
+
 	/* The length of the data. */
 	var lendt uint32
-	
+
 	/* Read from the Connection 1 KiB at a time. */
 	var buf []byte = make([]byte, CONNBUFLEN)
 	var bpos int
-	
+
 	/* INFOBUFFER stores length data from the beginning of the message to get the length of the rest. */
 	var infobuffer [16]byte
 	var ibindex uint32
-	
+
 	/* FPBUFFER stores the filepath data received so far. */
 	var fpbuffer []byte = make([]byte, MAXFILEPATHLEN, MAXFILEPATHLEN)
 	var fpindex uint32
 	var filepath string
-	
+
 	/* SNBUFFER stores the part of the serial number received so far. */
 	var snbuffer []byte = make([]byte, MAXSERNUMLEN, MAXSERNUMLEN)
 	var snindex uint32
 	var sernum string
 	var newsernum string
-	
+
 	/* DTBUFFER stores the part of the uPMU data received so far.
 	   If a file is bigger than expected, we allocate a bigger buffer, specially for that file. */
 	var dtbufferexp []byte = make([]byte, EXPDATALEN, EXPDATALEN)
@@ -132,11 +136,11 @@ func handlePMUConn(conn *net.TCPConn) {
 	var n int
 	/* TOTRECV stores the total number of bytes read from the TCP connection for this message. */
 	var totrecv uint32
-	
+
 	/* The response to send to the uPMU. */
 	var resp []byte
 	var recvdfull bool
-	
+
 	// Infinite loop to keep reading messages until connection is closed
 	for {
 		ibindex = 0
@@ -221,8 +225,12 @@ func handlePMUConn(conn *net.TCPConn) {
 						fmt.Printf("WARNING: got %d extra bytes\n", n - bpos)
 					}
 					// if we've reached this point, we have all the data
+					alias, ok := aliases[sernum]
+					if !ok {
+						alias = "UNKNOWN"
+					}
 					recvdfull = true
-					fmt.Printf("Received %s: serial number is %s, length is %v\n", filepath, sernum, lendt)
+					fmt.Printf("Received %s: serial number is %s (%s), length is %v\n", filepath, sernum, alias, lendt)
 					resp = processMessage(sendid, sernum, filepath, dtbuffer[:lendt])
 					_, erw = conn.Write(resp)
 					if erw != nil {
@@ -241,24 +249,43 @@ func handlePMUConn(conn *net.TCPConn) {
 
 func main() {
 	var port *int = flag.Int("p", 1883, "the port at which to accept incoming messages")
+	var aliasfile *string = flag.String("a", "", "an alias configuration file")
 	flag.Parse()
 
+	aliases = make(map[string]string)
+
+	if *aliasfile != "" {
+			file, err := os.Open(*aliasfile)
+			if err != nil {
+				fmt.Println("Could not file alias file")
+				os.Exit(1)
+			}
+			r := bufio.NewReader(file)
+			for {
+				ln, _, err := r.ReadLine()
+				if err != nil {
+					break
+				}
+				sl := strings.Split(string(ln), "=")
+				aliases[strings.TrimSpace(sl[0])] = strings.TrimSpace(sl[1])
+			}
+	}
 	var err error
-	
+
 	var basesession *mgo.Session
-	
+
 	basesession, err = mgo.Dial("localhost:27017")
 	if err != nil {
 		fmt.Printf("Could not connect to Mongo DB: %v\n", err)
 		os.Exit(0)
 	}
-	
+
 	var safetylevel *mgo.Safe = &mgo.Safe{W: 1, WTimeout: 1000 * TIMEOUTSECS, FSync: true}
 	basesession.EnsureSafe(safetylevel)
-	
+
 	var session *mgo.Session
     var upmu_database *mgo.Database
-	
+
 	send_semaphore = make(chan *mgo.Database, MAXCONCURRENTDBOPS)
 	for i := 0; i < MAXCONCURRENTDBOPS; i++ {
 		session = basesession.Copy()
@@ -266,10 +293,10 @@ func main() {
 		send_semaphore <- upmu_database
 	}
 	basesession.Close()
-	
+
 	var bindaddr *net.TCPAddr
 	var listener *net.TCPListener
-	
+
 	bindaddr, err = net.ResolveTCPAddr("tcp", fmt.Sprintf("0.0.0.0:%v", *port))
 	if err != nil {
 		fmt.Printf("Could not resolve address to bind TCP server socket: %v\n", err)
@@ -280,7 +307,7 @@ func main() {
 		fmt.Printf("Could not create bound TCP server socket: %v\n", err)
 		os.Exit(0)
 	}
-	
+
 	var upmuconn *net.TCPConn
 	for {
 		upmuconn, err = listener.AcceptTCP()
