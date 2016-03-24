@@ -13,9 +13,11 @@ import (
 	"strings"
 )
 
-var send_semaphore chan *mgo.Database
+var send_semaphore chan *mgo.Session
 
 var aliases map[string]string
+
+var FAILUREMSG = make([]byte, 4, 4)
 
 const (
 	CONNBUFLEN = 1024 // number of bytes we read from the connection at a time
@@ -23,7 +25,7 @@ const (
 	MAXSERNUMLEN = 32
 	EXPDATALEN = 757440
 	MAXDATALEN = 75744000
-	MAXCONCURRENTDBOPS = 10
+	MAXCONCURRENTSESSIONS = 16
 	TIMEOUTSECS = 30
 )
 
@@ -56,24 +58,27 @@ func processMessage(sendid []byte, sernum string, filepath string, data []byte) 
 	var docsel bson.M = bson.M{"serial_number": sernum}
 	var updatecmd bson.M = bson.M{"$set": bson.M{"time_received": msgdoc.TimeReceived}}
 
-	var upmu_database *mgo.Database = <-send_semaphore
+	var session *mgo.Session = <- send_semaphore
+	var upmu_database *mgo.Database = session.DB("upmu_database")
 	var received_files *mgo.Collection = upmu_database.C("received_files")
-    var latest_times *mgo.Collection = upmu_database.C("latest_times")
+	var latest_times *mgo.Collection = upmu_database.C("latest_times")
 
-	defer func () { send_semaphore <- upmu_database }()
+	defer func () { send_semaphore <- session }()
 
 	// Insert data
 	dberr = received_files.Insert(msgdoc)
 	if dberr != nil {
-		fmt.Printf("Could not insert file into received_files collection\n", dberr)
-		return make([]byte, 4, 4)
+		session.Refresh()
+		fmt.Printf("Could not insert file into received_files collection: %v\n", dberr)
+		return FAILUREMSG
 	}
 
 	// Update latest time
 	_, dberr = latest_times.Upsert(docsel, updatecmd)
 	if dberr != nil {
+		session.Refresh()
 		fmt.Printf("Could not update latest_times collection: %v\n", dberr)
-		return make([]byte, 4, 4)
+		return FAILUREMSG
 	}
 
 	// Database was successfully updated
@@ -283,14 +288,9 @@ func main() {
 	var safetylevel *mgo.Safe = &mgo.Safe{W: 1, WTimeout: 1000 * TIMEOUTSECS, FSync: true}
 	basesession.EnsureSafe(safetylevel)
 
-	var session *mgo.Session
-    var upmu_database *mgo.Database
-
-	send_semaphore = make(chan *mgo.Database, MAXCONCURRENTDBOPS)
-	for i := 0; i < MAXCONCURRENTDBOPS; i++ {
-		session = basesession.Copy()
-		upmu_database = session.DB("upmu_database")
-		send_semaphore <- upmu_database
+	send_semaphore = make(chan *mgo.Session, MAXCONCURRENTSESSIONS)
+	for i := 0; i < MAXCONCURRENTSESSIONS; i++ {
+		send_semaphore <- basesession.Copy()
 	}
 	basesession.Close()
 
