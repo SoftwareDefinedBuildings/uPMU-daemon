@@ -309,6 +309,8 @@ func main() {
 		os.Exit(0)
 	}
 
+	fmt.Println("Waiting for incoming connections...")
+	
 	var upmuconn *net.TCPConn
 	for {
 		upmuconn, err = listener.AcceptTCP()
