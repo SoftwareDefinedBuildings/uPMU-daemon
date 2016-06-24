@@ -116,8 +116,8 @@ if updated:
 curr_upmus = set(config.keys())
 old_upmus = set(oldconfig.keys())
 
-client = pymongo.MongoClient()
-metadata = client.qdf.metadata2
+client = pymongo.MongoClient(os.getenv("MONGO_ADDR","localhost"))
+metadata = client.qdf.metadata
 
 # Account for possible removal of uPMUs
 for upmu in old_upmus:
