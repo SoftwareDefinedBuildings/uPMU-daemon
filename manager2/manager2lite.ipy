@@ -48,7 +48,7 @@ else:
 curr_upmus = set(config.keys())
 old_upmus = set(oldconfig.keys())
 
-client = pymongo.MongoClient()
+client = pymongo.MongoClient(os.getenv("MONGO_ADDR","localhost"))
 metadata = client.qdf.metadata
 
 # Account for possible removal of uPMUs
