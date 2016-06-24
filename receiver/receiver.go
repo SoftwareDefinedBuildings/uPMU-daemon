@@ -255,6 +255,7 @@ func handlePMUConn(conn *net.TCPConn) {
 func main() {
 	var port *int = flag.Int("p", 1883, "the port at which to accept incoming messages")
 	var aliasfile *string = flag.String("a", "", "an alias configuration file")
+	var mongoaddr *string = flag.String("m", "localhost:27017", "hostname/port of mongo database")
 	flag.Parse()
 
 	aliases = make(map[string]string)
@@ -279,7 +280,7 @@ func main() {
 
 	var basesession *mgo.Session
 
-	basesession, err = mgo.Dial("localhost:27017")
+	basesession, err = mgo.Dial(*mongoaddr)
 	if err != nil {
 		fmt.Printf("Could not connect to Mongo DB: %v\n", err)
 		os.Exit(0)
