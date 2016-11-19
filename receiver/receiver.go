@@ -283,11 +283,29 @@ func main() {
 	basesession, err = mgo.Dial(*mongoaddr)
 	if err != nil {
 		fmt.Printf("Could not connect to Mongo DB: %v\n", err)
-		os.Exit(0)
+		os.Exit(1)
 	}
 
 	var safetylevel *mgo.Safe = &mgo.Safe{W: 1, WTimeout: 1000 * TIMEOUTSECS, FSync: true}
 	basesession.EnsureSafe(safetylevel)
+
+	var c *mgo.Collection = basesession.DB("upmu_database").C("received_files")
+
+	fmt.Println("Verifying that database indices exist...")
+	err = c.EnsureIndex(mgo.Index{
+		Key: []string{ "serial_number", "ytag", "name" },
+	})
+
+	if err == nil {
+		err = c.EnsureIndex(mgo.Index{
+			Key: []string{ "serial_number", "name" },
+		})
+	}
+
+	if err != nil {
+		fmt.Printf("Could not build indices on Mongo database: %v\nTerminating program...", err)
+		os.Exit(1)
+	}
 
 	send_semaphore = make(chan *mgo.Session, MAXCONCURRENTSESSIONS)
 	for i := 0; i < MAXCONCURRENTSESSIONS; i++ {
@@ -310,7 +328,7 @@ func main() {
 	}
 
 	fmt.Println("Waiting for incoming connections...")
-	
+
 	var upmuconn *net.TCPConn
 	for {
 		upmuconn, err = listener.AcceptTCP()
