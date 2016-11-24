@@ -15,6 +15,8 @@ import (
 
 var send_semaphore chan *mgo.Session
 
+var dry_run bool
+
 var aliases map[string]string
 
 var FAILUREMSG = make([]byte, 4, 4)
@@ -42,6 +44,11 @@ type MessageDoc struct {
 }
 
 func processMessage(sendid []byte, sernum string, filepath string, data []byte) []byte {
+
+	if dry_run {
+		return sendid
+	}
+
 	var dberr error
 
 	var msgdoc *MessageDoc = &MessageDoc{
@@ -255,7 +262,7 @@ func handlePMUConn(conn *net.TCPConn) {
 func main() {
 	var port *int = flag.Int("p", 1883, "the port at which to accept incoming messages")
 	var aliasfile *string = flag.String("a", "", "an alias configuration file")
-	var mongoaddr *string = flag.String("m", "localhost:27017", "hostname/port of mongo database")
+	var mongoaddr *string = flag.String("m", "localhost:27017", "hostname/port of mongo database, or \"NULL\" for dry-run mode")
 	flag.Parse()
 
 	aliases = make(map[string]string)
@@ -279,39 +286,48 @@ func main() {
 	var err error
 
 	var basesession *mgo.Session
+	var c *mgo.Collection
 
-	basesession, err = mgo.Dial(*mongoaddr)
-	if err != nil {
-		fmt.Printf("Could not connect to Mongo DB: %v\n", err)
-		os.Exit(1)
-	}
+	dry_run = (*mongoaddr == "NULL")
 
-	var safetylevel *mgo.Safe = &mgo.Safe{W: 1, WTimeout: 1000 * TIMEOUTSECS, FSync: true}
-	basesession.EnsureSafe(safetylevel)
+	if dry_run {
+		os.Stderr.WriteString("WARNING: Executing in dry-run mode. Received data is being ACKed but NOT stored in Mongo!\n")
+	} else {
+		dry_run = false
 
-	var c *mgo.Collection = basesession.DB("upmu_database").C("received_files")
+		basesession, err = mgo.Dial(*mongoaddr)
+		if err != nil {
+			fmt.Printf("Could not connect to Mongo DB: %v\n", err)
+			os.Exit(1)
+		}
 
-	fmt.Println("Verifying that database indices exist...")
-	err = c.EnsureIndex(mgo.Index{
-		Key: []string{ "serial_number", "ytag", "name" },
-	})
+		var safetylevel *mgo.Safe = &mgo.Safe{W: 1, WTimeout: 1000 * TIMEOUTSECS, FSync: true}
+		basesession.EnsureSafe(safetylevel)
 
-	if err == nil {
+		c = basesession.DB("upmu_database").C("received_files")
+
+		fmt.Println("Verifying that database indices exist...")
 		err = c.EnsureIndex(mgo.Index{
-			Key: []string{ "serial_number", "name" },
+			Key: []string{ "serial_number", "ytag", "name" },
 		})
-	}
 
-	if err != nil {
-		fmt.Printf("Could not build indices on Mongo database: %v\nTerminating program...", err)
-		os.Exit(1)
-	}
+		if err == nil {
+			err = c.EnsureIndex(mgo.Index{
+				Key: []string{ "serial_number", "name" },
+			})
+		}
 
-	send_semaphore = make(chan *mgo.Session, MAXCONCURRENTSESSIONS)
-	for i := 0; i < MAXCONCURRENTSESSIONS; i++ {
-		send_semaphore <- basesession.Copy()
+		if err != nil {
+			fmt.Printf("Could not build indices on Mongo database: %v\nTerminating program...", err)
+			os.Exit(1)
+		}
+
+		send_semaphore = make(chan *mgo.Session, MAXCONCURRENTSESSIONS)
+		for i := 0; i < MAXCONCURRENTSESSIONS; i++ {
+			send_semaphore <- basesession.Copy()
+		}
+		basesession.Close()
 	}
-	basesession.Close()
 
 	var bindaddr *net.TCPAddr
 	var listener *net.TCPListener
