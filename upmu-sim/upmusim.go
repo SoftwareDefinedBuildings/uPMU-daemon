@@ -120,6 +120,56 @@ func generateFile(startTime int64) []byte {
     return buffer.Bytes()
 }
 
+func clampFloat32(x float64) float32 {
+    var y float32 = float32(x)
+    var z float64 = float64(y)
+    if math.IsInf(z, 1) {
+        return math.MaxFloat32
+    } else if math.IsInf(z, -1) {
+        return -math.MaxFloat32
+    } else if math.IsNaN(z) {
+        return 0.0
+    } else {
+        return y
+    }
+}
+
+// This function is differentiable, but its derivative is not integrable.
+func x2sinxinv(x float64) float64 {
+    if x == 0.0 {
+        return 0.0
+    } else {
+        return x * x * math.Sin(1 / x)
+    }
+}
+
+// This function satisfies the Intermediate Value Property, but is not integrable.
+func xinvsinxinv(x float64) float64 {
+    if x == 0.0 {
+        return 0.0
+    } else {
+        xinv := 1 / x
+        return xinv * math.Sin(xinv)
+    }
+}
+
+const WEIERSTRASS_A float64 = 0.5
+const WEIERSTRASS_B float64 = 16.0
+const WEIERSTRASS_ITER int = 100
+
+// This approximates a function that is continuous, but not differentiable anywhere.
+func weierstrass(x float64) float64 {
+    var fx float64 = 0
+    var aton float64 = 1.0
+    var bton float64 = 1.0
+    for n := 0; n < WEIERSTRASS_ITER; n++ {
+        aton *= WEIERSTRASS_A
+        bton *= WEIERSTRASS_B
+        fx += aton * math.Cos(bton * math.Pi * x)
+    }
+    return fx
+}
+
 func generateSecond(startTime int64) upmuparser.Upmu_one_second_output_standard {
     var time time.Time = time.Unix(startTime, 0)
     var data upmuparser.Upmu_one_second_output_standard
@@ -133,7 +183,23 @@ func generateSecond(startTime int64) upmuparser.Upmu_one_second_output_standard 
 
     /* Fill in the actual data */
     for i := 0; i < 120; i++ {
-        data.Data.L1_e_vector_space[i].Fundamental_magnitude_volts = float32(math.Sin(float64(i) * 2.0 * math.Pi / 120))
+        data.Data.L1_e_vector_space[i].Fundamental_magnitude_volts = clampFloat32(math.Sin(float64(i) * 4.0 * math.Pi / 120))
+        data.Data.L2_e_vector_space[i].Fundamental_magnitude_volts = clampFloat32(math.Sin(float64(i) * 2.0 * math.Pi / 120))
+        data.Data.L3_e_vector_space[i].Fundamental_magnitude_volts = clampFloat32(math.Sin(float64(i) * 1.0 * math.Pi / 120))
+
+        data.Data.C1_e_vector_space[i].Fundamental_magnitude_volts = clampFloat32(math.Y0(float64(i) * 15.0 / 120))
+        data.Data.C2_e_vector_space[i].Fundamental_magnitude_volts = clampFloat32(math.Y1(float64(i) * 15.0 / 120))
+        data.Data.C3_e_vector_space[i].Fundamental_magnitude_volts = clampFloat32(math.Yn(2, float64(i) * 15.0 / 120))
+
+        data.Data.L1_e_vector_space[i].Phase_in_degrees = rand.Float32()
+        data.Data.L2_e_vector_space[i].Phase_in_degrees = clampFloat32(rand.NormFloat64())
+        data.Data.L3_e_vector_space[i].Phase_in_degrees = clampFloat32(rand.ExpFloat64())
+
+        data.Data.C1_e_vector_space[i].Phase_in_degrees = clampFloat32(x2sinxinv(float64(i - 60) / 240))
+        data.Data.C2_e_vector_space[i].Phase_in_degrees = clampFloat32(xinvsinxinv(float64(i - 60) / 120))
+        data.Data.C3_e_vector_space[i].Phase_in_degrees = clampFloat32(weierstrass(float64(i - 60) / 60))
+
+        data.Data.Status[i] = int32(1)
     }
 
     return data
